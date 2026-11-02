@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.vite/
+*.tsbuildinfo
+.DS_Store
+*.log
+.env
+.env.local
+apps/web/public/libav/*.wasm
+apps/web/public/libav/*.mjs
+!apps/web/public/libav/.gitkeep

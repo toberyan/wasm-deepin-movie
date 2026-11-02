@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@wasm-player/contracts": ["packages/contracts/src/index.ts"],
+      "@wasm-player/contracts/*": ["packages/contracts/src/*"],
+      "@wasm-player/player-core": ["packages/player-core/src/index.ts"],
+      "@wasm-player/source-readers": ["packages/source-readers/src/index.ts"],
+      "@wasm-player/media-engine": ["packages/media-engine/src/index.ts"],
+      "@wasm-player/ffmpeg-adapter": ["packages/ffmpeg-adapter/src/index.ts"],
+      "@wasm-player/webcodecs-adapter": ["packages/webcodecs-adapter/src/index.ts"],
+      "@wasm-player/renderer": ["packages/renderer/src/index.ts"],
+      "@wasm-player/audio": ["packages/audio/src/index.ts"],
+      "@wasm-player/subtitles": ["packages/subtitles/src/index.ts"],
+      "@wasm-player/storage": ["packages/storage/src/index.ts"],
+      "@wasm-player/host": ["packages/host/src/index.ts"],
+      "@wasm-player/agent-sdk": ["packages/agent-sdk/src/index.ts"],
+      "@wasm-player/mcp-server": ["packages/mcp-server/src/index.ts"],
+      "libavjs-webcodecs-bridge": ["packages/ffmpeg-adapter/src/libavjs-webcodecs-bridge.d.ts"]
+    }
+  }
+}

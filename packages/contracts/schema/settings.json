@@ -1,0 +1,850 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "advanced": false,
+      "defaultValue": 0,
+      "description": {
+        "en": "Brightness offset in the SDR grade domain.",
+        "zh": "在 SDR 调色域中增加亮度偏移。"
+      },
+      "group": "video",
+      "id": "video.brightness",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 1,
+        "minimum": -1,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p0",
+      "title": {
+        "en": "Brightness",
+        "zh": "亮度"
+      },
+      "uiScale": 100,
+      "unit": "ratio"
+    },
+    {
+      "advanced": false,
+      "defaultValue": 1,
+      "description": {
+        "en": "Neutral value is 1.",
+        "zh": "中性值为 1。"
+      },
+      "group": "video",
+      "id": "video.contrast",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 2,
+        "minimum": 0,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p0",
+      "title": {
+        "en": "Contrast",
+        "zh": "对比度"
+      },
+      "uiScale": 100,
+      "unit": "ratio"
+    },
+    {
+      "advanced": false,
+      "defaultValue": 1,
+      "description": {
+        "en": "Neutral value is 1.",
+        "zh": "中性值为 1。"
+      },
+      "group": "video",
+      "id": "video.saturation",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 2,
+        "minimum": 0,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p0",
+      "title": {
+        "en": "Saturation",
+        "zh": "饱和度"
+      },
+      "uiScale": 100,
+      "unit": "ratio"
+    },
+    {
+      "advanced": true,
+      "defaultValue": 1,
+      "description": {
+        "en": "Output equals input^(1/gamma); above 1 brightens.",
+        "zh": "输出等于输入的 1/gamma 次方；大于 1 提亮。"
+      },
+      "group": "video",
+      "id": "video.gamma",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 5,
+        "minimum": 0.1,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Gamma",
+        "zh": "Gamma"
+      },
+      "unit": "ratio"
+    },
+    {
+      "advanced": true,
+      "defaultValue": 0,
+      "description": {
+        "en": "Hue rotation in degrees.",
+        "zh": "色相旋转角度。"
+      },
+      "group": "video",
+      "id": "video.hueDeg",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 180,
+        "minimum": -180,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Hue",
+        "zh": "色相"
+      },
+      "unit": "deg"
+    },
+    {
+      "advanced": true,
+      "defaultValue": 0,
+      "description": {
+        "en": "Clockwise rotation.",
+        "zh": "顺时针旋转角度。"
+      },
+      "enumLabels": [
+        {
+          "en": "0°",
+          "value": 0,
+          "zh": "0°"
+        },
+        {
+          "en": "90°",
+          "value": 90,
+          "zh": "90°"
+        },
+        {
+          "en": "180°",
+          "value": 180,
+          "zh": "180°"
+        },
+        {
+          "en": "270°",
+          "value": 270,
+          "zh": "270°"
+        }
+      ],
+      "group": "video",
+      "id": "video.rotationDeg",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "const": 0,
+            "type": "number"
+          },
+          {
+            "const": 90,
+            "type": "number"
+          },
+          {
+            "const": 180,
+            "type": "number"
+          },
+          {
+            "const": 270,
+            "type": "number"
+          }
+        ]
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Rotation",
+        "zh": "旋转"
+      },
+      "unit": "deg"
+    },
+    {
+      "advanced": false,
+      "defaultValue": "contain",
+      "description": {
+        "en": "Contain, cover, fill or original size.",
+        "zh": "适应窗口、填满、拉伸或原始尺寸。"
+      },
+      "enumLabels": [
+        {
+          "en": "Contain",
+          "value": "contain",
+          "zh": "适应窗口"
+        },
+        {
+          "en": "Cover",
+          "value": "cover",
+          "zh": "填满窗口"
+        },
+        {
+          "en": "Fill",
+          "value": "fill",
+          "zh": "拉伸"
+        },
+        {
+          "en": "Original",
+          "value": "original",
+          "zh": "原始尺寸"
+        }
+      ],
+      "group": "video",
+      "id": "video.fit",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "contain",
+          "cover",
+          "fill",
+          "original"
+        ],
+        "type": "string"
+      },
+      "scope": "session",
+      "stage": "p1",
+      "title": {
+        "en": "Fit",
+        "zh": "画面适配"
+      },
+      "unit": "enum"
+    },
+    {
+      "advanced": true,
+      "defaultValue": {
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
+      },
+      "description": {
+        "en": "Normalized margins relative to the source frame.",
+        "zh": "以源画面为基准的归一化边距。"
+      },
+      "group": "video",
+      "id": "video.crop",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "bottom": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "left": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "right": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "top": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "left",
+          "top",
+          "right",
+          "bottom"
+        ],
+        "type": "object"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Crop",
+        "zh": "裁切"
+      },
+      "unit": "object"
+    },
+    {
+      "advanced": true,
+      "defaultValue": 0,
+      "description": {
+        "en": "Lightweight sharpening strength.",
+        "zh": "轻量锐化强度。"
+      },
+      "group": "video",
+      "id": "video.sharpness",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Sharpen",
+        "zh": "锐化"
+      },
+      "uiScale": 100,
+      "unit": "ratio"
+    },
+    {
+      "advanced": true,
+      "defaultValue": "high-quality",
+      "description": {
+        "en": "Scaling filter.",
+        "zh": "画面缩放采样方式。"
+      },
+      "enumLabels": [
+        {
+          "en": "Nearest",
+          "value": "nearest",
+          "zh": "最近邻"
+        },
+        {
+          "en": "Bilinear",
+          "value": "bilinear",
+          "zh": "双线性"
+        },
+        {
+          "en": "High quality",
+          "value": "high-quality",
+          "zh": "高质量"
+        }
+      ],
+      "group": "video",
+      "id": "video.scaleMode",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "nearest",
+          "bilinear",
+          "high-quality"
+        ],
+        "type": "string"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Scaling",
+        "zh": "缩放方式"
+      },
+      "unit": "enum"
+    },
+    {
+      "advanced": false,
+      "defaultValue": 1,
+      "description": {
+        "en": "Master volume, 0 to 1.",
+        "zh": "主音量，0 至 1。"
+      },
+      "group": "audio",
+      "id": "audio.volume",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p0",
+      "title": {
+        "en": "Volume",
+        "zh": "音量"
+      },
+      "uiScale": 100,
+      "unit": "ratio"
+    },
+    {
+      "advanced": true,
+      "defaultValue": 0,
+      "description": {
+        "en": "Additional gain with clipping protection.",
+        "zh": "额外增益，输出带防削波处理。"
+      },
+      "group": "audio",
+      "id": "audio.gainDb",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 12,
+        "minimum": -24,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Gain",
+        "zh": "增益"
+      },
+      "unit": "db"
+    },
+    {
+      "advanced": false,
+      "defaultValue": false,
+      "description": {
+        "en": "Mute audio while the timeline continues.",
+        "zh": "静音但不停止时钟推进。"
+      },
+      "group": "audio",
+      "id": "audio.muted",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "boolean"
+      },
+      "scope": "session",
+      "stage": "p1",
+      "title": {
+        "en": "Mute",
+        "zh": "静音"
+      },
+      "unit": "boolean"
+    },
+    {
+      "advanced": true,
+      "defaultValue": 0,
+      "description": {
+        "en": "-1 is left, 1 is right.",
+        "zh": "-1 为左，1 为右。"
+      },
+      "group": "audio",
+      "id": "audio.balance",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 1,
+        "minimum": -1,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Balance",
+        "zh": "左右平衡"
+      },
+      "unit": "ratio"
+    },
+    {
+      "advanced": true,
+      "defaultValue": 0,
+      "description": {
+        "en": "Positive values present audio later.",
+        "zh": "正值使音频更晚呈现。"
+      },
+      "group": "audio",
+      "id": "audio.delayMs",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 10000,
+        "minimum": -10000,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Audio delay",
+        "zh": "音频延迟"
+      },
+      "unit": "ms"
+    },
+    {
+      "advanced": false,
+      "defaultValue": 0,
+      "description": {
+        "en": "Positive values present subtitles later.",
+        "zh": "正值使字幕更晚呈现。"
+      },
+      "group": "subtitle",
+      "id": "subtitle.delayMs",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 10000,
+        "minimum": -10000,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p0",
+      "title": {
+        "en": "Subtitle delay",
+        "zh": "字幕延迟"
+      },
+      "unit": "ms"
+    },
+    {
+      "advanced": false,
+      "defaultValue": true,
+      "description": {
+        "en": "Temporarily hide subtitles without unloading the track.",
+        "zh": "临时隐藏字幕，不卸载轨道。"
+      },
+      "group": "subtitle",
+      "id": "subtitle.visible",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "boolean"
+      },
+      "scope": "session",
+      "stage": "p1",
+      "title": {
+        "en": "Show subtitles",
+        "zh": "显示字幕"
+      },
+      "unit": "boolean"
+    },
+    {
+      "advanced": false,
+      "defaultValue": 100,
+      "description": {
+        "en": "Relative to the default font size.",
+        "zh": "相对默认字号的比例。"
+      },
+      "group": "subtitle",
+      "id": "subtitle.fontSizePct",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 250,
+        "minimum": 50,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p1",
+      "title": {
+        "en": "Font size",
+        "zh": "字号"
+      },
+      "uiScale": 1,
+      "unit": "percent"
+    },
+    {
+      "advanced": true,
+      "defaultValue": false,
+      "description": {
+        "en": "Override ASS styles; original styles are respected by default.",
+        "zh": "覆盖 ASS 原样式；默认尊重原样式。"
+      },
+      "group": "subtitle",
+      "id": "subtitle.forceStyle",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "boolean"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Force subtitle style",
+        "zh": "强制字幕样式"
+      },
+      "unit": "boolean"
+    },
+    {
+      "advanced": false,
+      "defaultValue": 1,
+      "description": {
+        "en": "Requested rate; effective range depends on performance.",
+        "zh": "请求倍速，实际范围受性能约束。"
+      },
+      "group": "playback",
+      "id": "playback.rate",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 4,
+        "minimum": 0.25,
+        "type": "number"
+      },
+      "scope": "session",
+      "stage": "p0",
+      "title": {
+        "en": "Playback rate",
+        "zh": "播放速度"
+      },
+      "unit": "times"
+    },
+    {
+      "advanced": false,
+      "defaultValue": "off",
+      "description": {
+        "en": "Off, single media or playlist loop.",
+        "zh": "关闭、单文件循环或列表循环。"
+      },
+      "enumLabels": [
+        {
+          "en": "Off",
+          "value": "off",
+          "zh": "关闭"
+        },
+        {
+          "en": "Media",
+          "value": "media",
+          "zh": "单文件"
+        },
+        {
+          "en": "Playlist",
+          "value": "playlist",
+          "zh": "列表"
+        }
+      ],
+      "group": "playback",
+      "id": "playback.loop",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "off",
+          "media",
+          "playlist"
+        ],
+        "type": "string"
+      },
+      "scope": "global",
+      "stage": "p1",
+      "title": {
+        "en": "Loop",
+        "zh": "循环"
+      },
+      "unit": "enum"
+    },
+    {
+      "advanced": false,
+      "defaultValue": false,
+      "description": {
+        "en": "Try to play after opening; user activation may be required.",
+        "zh": "打开媒体后尝试自动播放，可能受用户激活限制。"
+      },
+      "group": "playback",
+      "id": "playback.autoPlay",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "boolean"
+      },
+      "scope": "global",
+      "stage": "p1",
+      "title": {
+        "en": "Autoplay",
+        "zh": "自动播放"
+      },
+      "unit": "boolean"
+    },
+    {
+      "advanced": true,
+      "defaultValue": 0.05,
+      "description": {
+        "en": "Keyboard volume adjustment step.",
+        "zh": "键盘音量调整步长。"
+      },
+      "group": "playback",
+      "id": "playback.volumeStep",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maximum": 0.5,
+        "minimum": 0.01,
+        "type": "number"
+      },
+      "scope": "global",
+      "stage": "p1",
+      "title": {
+        "en": "Volume step",
+        "zh": "音量步进"
+      },
+      "uiScale": 100,
+      "unit": "ratio"
+    },
+    {
+      "advanced": false,
+      "defaultValue": "dark",
+      "description": {
+        "en": "Interface theme.",
+        "zh": "界面主题。"
+      },
+      "enumLabels": [
+        {
+          "en": "System",
+          "value": "system",
+          "zh": "跟随系统"
+        },
+        {
+          "en": "Dark",
+          "value": "dark",
+          "zh": "深色"
+        },
+        {
+          "en": "Light",
+          "value": "light",
+          "zh": "浅色"
+        }
+      ],
+      "group": "app",
+      "id": "app.theme",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "system",
+          "dark",
+          "light"
+        ],
+        "type": "string"
+      },
+      "scope": "global",
+      "stage": "p0",
+      "title": {
+        "en": "Theme",
+        "zh": "主题"
+      },
+      "unit": "enum"
+    },
+    {
+      "advanced": true,
+      "defaultValue": false,
+      "description": {
+        "en": "Reduce interface animation.",
+        "zh": "减少界面动画。"
+      },
+      "group": "app",
+      "id": "app.reduceMotion",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "boolean"
+      },
+      "scope": "global",
+      "stage": "p1",
+      "title": {
+        "en": "Reduce motion",
+        "zh": "减少动态效果"
+      },
+      "unit": "boolean"
+    },
+    {
+      "advanced": true,
+      "defaultValue": false,
+      "description": {
+        "en": "Show decode path, queues and dropped frames.",
+        "zh": "显示解码路径、队列与掉帧统计。"
+      },
+      "group": "app",
+      "id": "app.showStats",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "boolean"
+      },
+      "scope": "global",
+      "stage": "p1",
+      "title": {
+        "en": "Show stats",
+        "zh": "显示统计"
+      },
+      "unit": "boolean"
+    },
+    {
+      "advanced": false,
+      "defaultValue": "none",
+      "description": {
+        "en": "Currently open side panel.",
+        "zh": "当前打开的侧栏面板。"
+      },
+      "enumLabels": [
+        {
+          "en": "None",
+          "value": "none",
+          "zh": "无"
+        },
+        {
+          "en": "Playlist",
+          "value": "playlist",
+          "zh": "列表"
+        },
+        {
+          "en": "Settings",
+          "value": "settings",
+          "zh": "设置"
+        }
+      ],
+      "group": "app",
+      "id": "app.panel",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "none",
+          "playlist",
+          "settings"
+        ],
+        "type": "string"
+      },
+      "scope": "session",
+      "stage": "p0",
+      "title": {
+        "en": "Side panel",
+        "zh": "侧栏"
+      },
+      "unit": "enum"
+    }
+  ]
+}

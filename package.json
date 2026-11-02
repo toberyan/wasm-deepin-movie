@@ -1,0 +1,44 @@
+{
+  "name": "wasm-deepin-movie",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WASM-first video player with WebCodecs, WebGL2 and agent control",
+  "packageManager": "pnpm@11.28.9",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm libav:sync && pnpm --filter @wasm-player/web dev",
+    "build": "pnpm libav:sync && pnpm --filter @wasm-player/web build",
+    "preview": "pnpm --filter @wasm-player/web preview",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "depcruise": "depcruise packages apps --config dependency-cruiser.config.cjs",
+    "schema:generate": "tsx scripts/generate-schemas.ts",
+    "schema:check": "tsx scripts/generate-schemas.ts --check",
+    "fixtures": "bash scripts/make-fixtures.sh",
+    "check": "pnpm lint && pnpm typecheck && pnpm schema:check && pnpm test && pnpm depcruise",
+    "libav:sync": "node scripts/sync-libav-assets.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@playwright/test": "1.64.1",
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "dependency-cruiser": "18.7.1",
+    "eslint": "9.39.5",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "globals": "16.5.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vite": "7.3.7",
+    "vitest": "3.2.7"
+  }
+}

@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "ffmpeg 6.1.5-0deepin4 (system GPL build; used only to create test fixtures, not shipped)",
+  "generatedAt": "2026-11-02T11:37:05.828Z",
+  "note": "Synthetic lavfi sources. H.264/HEVC/AAC/AC-3 are test assets; review distribution/licensing before publishing binaries.",
+  "fixtures": [
+    {
+      "id": "S5",
+      "path": "generated/sample-h264-aac-subs.mkv",
+      "sha256": "64a83360317ac77807bb4fe0ac22e1ed96e2e23fc6212b2440b981b971f7fd8e",
+      "bytes": 235889,
+      "container": "matroska,webm",
+      "durationSec": 2.021,
+      "video": {
+        "codec": "h264",
+        "profile": "High",
+        "width": 640,
+        "height": 360,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": {
+        "codec": "aac",
+        "sampleRate": 48000,
+        "channels": 1,
+        "channelLayout": "mono"
+      },
+      "subtitle": {
+        "codec": "subrip"
+      },
+      "expectedDecodePath": {
+        "video": "webcodecs",
+        "audio": "webcodecs"
+      },
+      "license": "Generated locally for tests; not distributed as a product asset."
+    },
+    {
+      "id": "S1",
+      "path": "generated/sample-h264-aac.mp4",
+      "sha256": "9a5d68b8db17a69fe3656aee98b0171ddd46584a7bfdb2c6dff2cec98741dd02",
+      "bytes": 237132,
+      "container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "durationSec": 2,
+      "video": {
+        "codec": "h264",
+        "profile": "High",
+        "width": 640,
+        "height": 360,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": {
+        "codec": "aac",
+        "sampleRate": 48000,
+        "channels": 1,
+        "channelLayout": "mono"
+      },
+      "subtitle": null,
+      "expectedDecodePath": {
+        "video": "webcodecs",
+        "audio": "webcodecs"
+      },
+      "license": "Generated locally for tests; not distributed as a product asset."
+    },
+    {
+      "id": "S2",
+      "path": "generated/sample-hevc-ac3.mkv",
+      "sha256": "dc93d85522767e1ded3a5a996ee35db30da7adf18c3baa8757b51f7f8bddb52e",
+      "bytes": 236436,
+      "container": "matroska,webm",
+      "durationSec": 2,
+      "video": {
+        "codec": "hevc",
+        "profile": "Main",
+        "width": 640,
+        "height": 360,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": {
+        "codec": "ac3",
+        "sampleRate": 48000,
+        "channels": 6,
+        "channelLayout": "5.1(side)"
+      },
+      "subtitle": null,
+      "expectedDecodePath": {
+        "video": "webcodecs",
+        "audio": "wasm"
+      },
+      "license": "Generated locally for tests; not distributed as a product asset.",
+      "notes": "AC-3 has no WebCodecs config; WASM decoding requires the custom decode-audio-common build."
+    },
+    {
+      "id": "S4",
+      "path": "generated/sample-mpeg4-mp3.avi",
+      "sha256": "3229d0b448cb37861ee5ef0bbb982c0cfbf7b6d2bf81f35fd28aef73a16b61e8",
+      "bytes": 180638,
+      "container": "avi",
+      "durationSec": 2.037551,
+      "video": {
+        "codec": "mpeg4",
+        "profile": "Simple Profile",
+        "width": 640,
+        "height": 360,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": {
+        "codec": "mp3",
+        "sampleRate": 44100,
+        "channels": 1,
+        "channelLayout": "mono"
+      },
+      "subtitle": null,
+      "expectedDecodePath": null,
+      "license": "Generated locally for tests; not distributed as a product asset.",
+      "notes": "Requires the project legacy/WASM build; the prebuilt webcodecs variant has no AVI demuxer."
+    },
+    {
+      "id": "S3",
+      "path": "generated/sample-vp9-opus.webm",
+      "sha256": "1817b378dc5fed5efaf6a752baecfb575de305c22c143c007499ccb953f6362b",
+      "bytes": 134837,
+      "container": "matroska,webm",
+      "durationSec": 2.008,
+      "video": {
+        "codec": "vp9",
+        "profile": "Profile 0",
+        "width": 640,
+        "height": 360,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": {
+        "codec": "opus",
+        "sampleRate": 48000,
+        "channels": 1,
+        "channelLayout": "mono"
+      },
+      "subtitle": null,
+      "expectedDecodePath": {
+        "video": "webcodecs",
+        "audio": "webcodecs"
+      },
+      "license": "Generated locally for tests; not distributed as a product asset."
+    }
+  ]
+}

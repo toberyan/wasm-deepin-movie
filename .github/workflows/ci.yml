@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm libav:sync
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm schema:check
+      - run: pnpm test
+      - run: pnpm depcruise
+      - run: pnpm --filter @wasm-player/web build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: |
+            apps/web/dist
+            native/builds/manifests/webcodecs.json
+          if-no-files-found: error
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm libav:sync
+      - run: pnpm exec playwright test --reporter=list
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report
+          if-no-files-found: ignore

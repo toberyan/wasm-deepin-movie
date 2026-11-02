@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "abi": "wasm-player-1",
+  "variant": {
+    "name": "webcodecs",
+    "threads": "st",
+    "simd": false
+  },
+  "libavjs": {
+    "package": "@libav.js/variant-webcodecs",
+    "version": "6.10.9",
+    "build": "6.10.9.0"
+  },
+  "ffmpeg": {
+    "version": "bundled by libav.js 6.10.9.0",
+    "license": "LGPL-2.1-or-later"
+  },
+  "bridge": {
+    "package": "libavjs-webcodecs-bridge",
+    "version": "0.3.2"
+  },
+  "demuxers": [
+    "mov",
+    "matroska",
+    "ogg",
+    "flac",
+    "wav"
+  ],
+  "parsers": [
+    "h264",
+    "hevc",
+    "vp8",
+    "vp9",
+    "av1",
+    "aac",
+    "opus",
+    "flac"
+  ],
+  "decoders": [
+    "opus",
+    "flac",
+    "pcm_s16le",
+    "pcm_s24le"
+  ],
+  "filters": [
+    "aresample",
+    "format",
+    "scale"
+  ],
+  "artifacts": [
+    {
+      "path": "apps/web/public/libav/libav-6.10.9.0-webcodecs.mjs",
+      "source": "node_modules/@libav.js/variant-webcodecs/dist/libav-6.10.9.0-webcodecs.mjs",
+      "bytes": 27617,
+      "sha256": "6f810e443f9400d4bd72863358d2bfb99b4063d632e97fe3417457ea13fd19ce"
+    },
+    {
+      "path": "apps/web/public/libav/libav-6.10.9.0-webcodecs.wasm.mjs",
+      "source": "node_modules/@libav.js/variant-webcodecs/dist/libav-6.10.9.0-webcodecs.wasm.mjs",
+      "bytes": 272152,
+      "sha256": "56d794ee030cd6079594909603140af363e141ba13e39758fff948630eaf3c82"
+    },
+    {
+      "path": "apps/web/public/libav/libav-6.10.9.0-webcodecs.wasm.wasm",
+      "source": "node_modules/@libav.js/variant-webcodecs/dist/libav-6.10.9.0-webcodecs.wasm.wasm",
+      "bytes": 2344846,
+      "sha256": "4342db5874e1aff37d078369a19c41e16c123d41714ebf5977ae385ab53b5d3a"
+    }
+  ],
+  "license": {
+    "spdx": "LGPL-2.1-or-later",
+    "notice": "docs/legal/third-party.md",
+    "sources": "node_modules/@libav.js/variant-webcodecs/sources is not present in the npm artifact; source release must accompany distribution"
+  },
+  "limitations": [
+    "No AVI demuxer or MPEG-4 Part 2 / MP3 decoders in this prebuilt variant.",
+    "No WASM H.264/HEVC/VP8/VP9/AV1 decoders; WebCodecs is the only video path for those codecs with this artifact.",
+    "Project-owned demux-common/decode-* builds and their manifests remain a P0-03 exit item."
+  ]
+}

@@ -1,0 +1,240 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "patch": {
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "additionalProperties": false,
+            "properties": {
+              "panel": {
+                "enum": [
+                  "none",
+                  "playlist",
+                  "settings"
+                ],
+                "type": "string"
+              },
+              "reduceMotion": {
+                "type": "boolean"
+              },
+              "showStats": {
+                "type": "boolean"
+              },
+              "theme": {
+                "enum": [
+                  "system",
+                  "dark",
+                  "light"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "audio": {
+            "additionalProperties": false,
+            "properties": {
+              "balance": {
+                "maximum": 1,
+                "minimum": -1,
+                "type": "number"
+              },
+              "delayMs": {
+                "maximum": 10000,
+                "minimum": -10000,
+                "type": "number"
+              },
+              "gainDb": {
+                "maximum": 12,
+                "minimum": -24,
+                "type": "number"
+              },
+              "muted": {
+                "type": "boolean"
+              },
+              "volume": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "playback": {
+            "additionalProperties": false,
+            "properties": {
+              "autoPlay": {
+                "type": "boolean"
+              },
+              "loop": {
+                "enum": [
+                  "off",
+                  "media",
+                  "playlist"
+                ],
+                "type": "string"
+              },
+              "rate": {
+                "maximum": 4,
+                "minimum": 0.25,
+                "type": "number"
+              },
+              "volumeStep": {
+                "maximum": 0.5,
+                "minimum": 0.01,
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "subtitle": {
+            "additionalProperties": false,
+            "properties": {
+              "delayMs": {
+                "maximum": 10000,
+                "minimum": -10000,
+                "type": "number"
+              },
+              "fontSizePct": {
+                "maximum": 250,
+                "minimum": 50,
+                "type": "number"
+              },
+              "forceStyle": {
+                "type": "boolean"
+              },
+              "visible": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "video": {
+            "additionalProperties": false,
+            "properties": {
+              "brightness": {
+                "maximum": 1,
+                "minimum": -1,
+                "type": "number"
+              },
+              "contrast": {
+                "maximum": 2,
+                "minimum": 0,
+                "type": "number"
+              },
+              "crop": {
+                "additionalProperties": false,
+                "properties": {
+                  "bottom": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "left": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "right": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "top": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "left",
+                  "top",
+                  "right",
+                  "bottom"
+                ],
+                "type": "object"
+              },
+              "fit": {
+                "enum": [
+                  "contain",
+                  "cover",
+                  "fill",
+                  "original"
+                ],
+                "type": "string"
+              },
+              "gamma": {
+                "maximum": 5,
+                "minimum": 0.1,
+                "type": "number"
+              },
+              "hueDeg": {
+                "maximum": 180,
+                "minimum": -180,
+                "type": "number"
+              },
+              "rotationDeg": {
+                "anyOf": [
+                  {
+                    "const": 0,
+                    "type": "number"
+                  },
+                  {
+                    "const": 90,
+                    "type": "number"
+                  },
+                  {
+                    "const": 180,
+                    "type": "number"
+                  },
+                  {
+                    "const": 270,
+                    "type": "number"
+                  }
+                ]
+              },
+              "saturation": {
+                "maximum": 2,
+                "minimum": 0,
+                "type": "number"
+              },
+              "scaleMode": {
+                "enum": [
+                  "nearest",
+                  "bilinear",
+                  "high-quality"
+                ],
+                "type": "string"
+              },
+              "sharpness": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "scope": {
+        "enum": [
+          "global",
+          "media",
+          "session",
+          "preset"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "scope",
+      "patch"
+    ],
+    "type": "object"
+  },
+  "schemaVersion": 1
+}

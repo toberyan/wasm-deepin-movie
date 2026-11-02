@@ -1,0 +1,29 @@
+{
+  "name": "@wasm-player/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@wasm-player/audio": "workspace:*",
+    "@wasm-player/contracts": "workspace:*",
+    "@wasm-player/ffmpeg-adapter": "workspace:*",
+    "@wasm-player/media-engine": "workspace:*",
+    "@wasm-player/player-core": "workspace:*",
+    "@wasm-player/renderer": "workspace:*",
+    "@wasm-player/subtitles": "workspace:*",
+    "@wasm-player/webcodecs-adapter": "workspace:*",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "vite": "7.3.7"
+  }
+}

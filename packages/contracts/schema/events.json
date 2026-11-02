@@ -1,0 +1,57 @@
+{
+  "event": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "at": {
+        "minimum": 0,
+        "type": "number"
+      },
+      "payload": {},
+      "revision": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "seq": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "sessionId": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": {
+        "enum": [
+          "state",
+          "phase",
+          "position",
+          "mediaOpened",
+          "mediaClosed",
+          "trackChanged",
+          "decodePathChanged",
+          "settingsApplied",
+          "buffering",
+          "seeked",
+          "ended",
+          "error",
+          "jobUpdated",
+          "capabilitiesChanged",
+          "stats"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "seq",
+      "sessionId",
+      "type",
+      "at",
+      "revision",
+      "payload"
+    ],
+    "type": "object"
+  },
+  "schemaVersion": 1
+}
