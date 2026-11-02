@@ -1,4 +1,5 @@
 import LibAV from "@libav.js/variant-webcodecs";
+import { loadLibAV, type LibAVWrapper } from "./libav-loader";
 import * as bridge from "libavjs-webcodecs-bridge";
 import type * as LibAVJS from "@libav.js/types";
 import { PlayerError } from "@wasm-player/contracts";
@@ -19,6 +20,8 @@ import type {
   SeekResult,
   StreamRouteCandidate,
   VideoCodecConfig,
+  WasmAudioChunk,
+  WasmVideoFrame,
   WorkerSource
 } from "./protocol";
 
@@ -26,7 +29,13 @@ type LibAVInstance = LibAVJS.LibAV;
 
 export interface DemuxSessionOptions {
   libavBase?: string;
+  libavVariant?: string;
   fetch?: typeof fetch;
+  /**
+   * libav.js 6.8.8 direct mode installs its own global onmessage handler even
+   * with noworker. The owning worker uses this hook to restore its dispatcher.
+   */
+  onLibavReady?: () => void;
 }
 
 export interface DemuxOpenOptions {
@@ -150,8 +159,14 @@ function sourceErrorToPlayerError(error: SourceError): PlayerError {
   }
 }
 
-function timeUs(lo: number | undefined, hi: number | undefined, tbNum: number, tbDen: number): number {
-  const value = LibAV.i64tof64(lo ?? 0, hi ?? 0);
+function timeUs(
+  wrapper: LibAVWrapper,
+  lo: number | undefined,
+  hi: number | undefined,
+  tbNum: number,
+  tbDen: number
+): number {
+  const value = wrapper.i64tof64(lo ?? 0, hi ?? 0);
   return Math.round((value * tbNum * 1_000_000) / tbDen);
 }
 
@@ -165,9 +180,20 @@ function sourceName(source: WorkerSource, fallback: string): string {
   }
 }
 
+interface WasmDecoderState {
+  stream: LibAVJS.Stream;
+  decoder: number;
+  packet: number;
+  frame: number;
+  nextAudioTimestampUs?: number;
+  nextVideoTimestampUs?: number;
+}
+
 export class DemuxSession {
   private readonly options: DemuxSessionOptions;
   private libavBase: string | undefined;
+  private libavVariant: string | undefined;
+  private libavWrapper: LibAVWrapper = LibAV;
   private libav: LibAVInstance | null = null;
   private source: SourceReader | null = null;
   private fmt = 0;
@@ -175,6 +201,8 @@ export class DemuxSession {
   private streams: LibAVJS.Stream[] = [];
   private streamByIndex = new Map<number, LibAVJS.Stream>();
   private pending: DemuxPacket[] = [];
+  private wasmDecoders = new Map<number, WasmDecoderState>();
+  private wasmFlushed = false;
   private probe: ProbeResult | null = null;
   private lastSourceError: SourceError | null = null;
   private closed = false;
@@ -182,11 +210,17 @@ export class DemuxSession {
   constructor(options: DemuxSessionOptions = {}) {
     this.options = options;
     this.libavBase = options.libavBase;
+    this.libavVariant = options.libavVariant;
   }
 
   setLibavBase(base: string | undefined): void {
     if (this.libav) throw new PlayerError("BUSY", "cannot change libav base while open");
     this.libavBase = base;
+  }
+
+  setLibavVariant(variant: string | undefined): void {
+    if (this.libav) throw new PlayerError("BUSY", "cannot change libav variant while open");
+    this.libavVariant = variant;
   }
 
   async open(source: WorkerSource, options: DemuxOpenOptions = {}): Promise<ProbeResult> {
@@ -208,9 +242,15 @@ export class DemuxSession {
     try {
       const libavOptions: { noworker: boolean; base?: string } = { noworker: true };
       if (this.libavBase) libavOptions.base = this.libavBase;
-      const libav = await LibAV.LibAV(libavOptions);
+      const wrapper = await loadLibAV({
+        base: this.libavBase,
+        variant: this.libavVariant
+      });
+      this.libavWrapper = wrapper;
+      const libav = await wrapper.LibAV(libavOptions);
+      this.options.onLibavReady?.();
       this.libav = libav;
-      (globalThis as Record<string, unknown>).LibAV = LibAV;
+      (globalThis as Record<string, unknown>).LibAV = wrapper;
       await libav.mkblockreaderdev("input", size);
       libav.onblockread = (name, position, length) => {
         void this.handleBlockRead(name, position, length);
@@ -244,7 +284,9 @@ export class DemuxSession {
         packets,
         bytes: packets.reduce((sum, packet) => sum + packet.data.byteLength, 0),
         eof: false,
-        eagain: false
+        eagain: false,
+        wasmVideoFrames: [],
+        wasmAudioChunks: []
       };
     }
     if (this.fmt === 0 || this.pkt === 0) throw new PlayerError("NEEDS_MEDIA", "no media is open");
@@ -259,7 +301,11 @@ export class DemuxSession {
       });
     }
     const [ret, packetsByStream] = result;
-    const packets: DemuxPacket[] = [];
+    const ordered: {
+      stream: LibAVJS.Stream;
+      raw: LibAVJS.Packet;
+      converted: DemuxPacket;
+    }[] = [];
     for (const [streamIndex, streamPackets] of Object.entries(packetsByStream)) {
       const stream = this.streamByIndex.get(Number(streamIndex));
       if (!stream) continue;
@@ -267,24 +313,69 @@ export class DemuxSession {
       if (type !== "video" && type !== "audio") continue;
       for (const packet of streamPackets) {
         const converted = this.convertPacket(stream, packet);
-        if (converted) packets.push(converted);
+        if (converted) ordered.push({ stream, raw: packet, converted });
       }
     }
-    packets.sort(
+    ordered.sort(
       (a, b) =>
-        a.dtsUs - b.dtsUs ||
-        a.ptsUs - b.ptsUs ||
-        a.streamIndex - b.streamIndex
+        a.converted.dtsUs - b.converted.dtsUs ||
+        a.converted.ptsUs - b.converted.ptsUs ||
+        a.converted.streamIndex - b.converted.streamIndex
     );
+    const packets: DemuxPacket[] = [];
+    const wasmVideoFrames: WasmVideoFrame[] = [];
+    const wasmAudioChunks: WasmAudioChunk[] = [];
+    for (const entry of ordered) {
+      const decoder = this.wasmDecoders.get(entry.stream.index);
+      if (decoder) {
+        await this.decodeWasmPacket(decoder, entry.raw, entry.converted, wasmVideoFrames, wasmAudioChunks);
+      } else {
+        packets.push(entry.converted);
+      }
+    }
+    const eof = ret === libav.AVERROR_EOF && packets.length === 0;
+    if (eof && !this.wasmFlushed) {
+      await this.flushWasmDecoders(wasmVideoFrames, wasmAudioChunks);
+      this.wasmFlushed = true;
+    }
     this.pending = packets.slice(maxPackets);
     const output = packets.slice(0, maxPackets);
-    const eof = ret === libav.AVERROR_EOF && this.pending.length === 0;
     return {
       packets: output,
       bytes: output.reduce((sum, packet) => sum + packet.data.byteLength, 0),
-      eof,
-      eagain: ret === -libav.EAGAIN
+      eof: eof && this.pending.length === 0,
+      eagain: ret === -libav.EAGAIN,
+      wasmVideoFrames,
+      wasmAudioChunks
     };
+  }
+
+  async configureWasmDecoders(streamIndexes: number[]): Promise<number[]> {
+    const libav = this.requireLibav();
+    const configured: number[] = [];
+    for (const index of streamIndexes) {
+      if (this.wasmDecoders.has(index)) {
+        configured.push(index);
+        continue;
+      }
+      const stream = this.streamByIndex.get(index);
+      if (!stream || (stream.codec_type !== STREAM_TYPE_VIDEO && stream.codec_type !== STREAM_TYPE_AUDIO)) {
+        continue;
+      }
+      const [codec, decoder, packet, frame] = await libav.ff_init_decoder(stream.codec_id, {
+        codecpar: stream.codecpar,
+        time_base: [stream.time_base_num, stream.time_base_den]
+      });
+      void codec;
+      this.wasmDecoders.set(index, {
+        stream,
+        decoder,
+        packet,
+        frame
+      });
+      configured.push(index);
+    }
+    return configured;
   }
 
   async seek(positionUs: number): Promise<SeekResult> {
@@ -294,6 +385,8 @@ export class DemuxSession {
       throw new PlayerError("UNSUPPORTED", "source does not support seeking");
     }
     this.pending = [];
+    await this.flushWasmDecoderState();
+    this.wasmFlushed = false;
     const target = this.streams.find((stream) => stream.codec_type === STREAM_TYPE_VIDEO) ??
       this.streams.find((stream) => stream.codec_type === STREAM_TYPE_AUDIO);
     if (!target) throw new PlayerError("DECODE_FAILED", "media has no seekable stream");
@@ -324,7 +417,9 @@ export class DemuxSession {
         positionUs: actual,
         errorUs: actual - positionUs,
         packets: first.packets,
-        eof: first.eof
+        eof: first.eof,
+        wasmVideoFrames: first.wasmVideoFrames,
+        wasmAudioChunks: first.wasmAudioChunks
       };
     } catch (error) {
       if (this.lastSourceError) throw sourceErrorToPlayerError(this.lastSourceError);
@@ -353,6 +448,12 @@ export class DemuxSession {
     this.streamByIndex.clear();
     this.pending = [];
     this.probe = null;
+    for (const state of this.wasmDecoders.values()) {
+      if (libav) {
+        await libav.ff_free_decoder(state.decoder, state.packet, state.frame).catch(() => undefined);
+      }
+    }
+    this.wasmDecoders.clear();
     if (libav) {
       try {
         if (pkt !== 0) await libav.av_packet_free(pkt);
@@ -408,6 +509,128 @@ export class DemuxSession {
             ? error
             : new SourceError("READ_FAILED", error instanceof Error ? error.message : String(error));
       });
+  }
+
+  private async decodeWasmPacket(
+    state: WasmDecoderState,
+    raw: LibAVJS.Packet,
+    packet: DemuxPacket,
+    videoOut: WasmVideoFrame[],
+    audioOut: WasmAudioChunk[]
+  ): Promise<void> {
+    const libav = this.requireLibav();
+    const isVideo = packet.streamType === "video";
+    if (isVideo) {
+      const images = (await libav.ff_decode_multi(
+        state.decoder,
+        state.packet,
+        state.frame,
+        [raw],
+        { copyoutFrame: "ImageData" }
+      )) as ImageData[];
+      const durationUs = packet.durationUs > 0 ? packet.durationUs : 33_333;
+      const baseTimestamp = state.nextVideoTimestampUs ?? packet.ptsUs;
+      images.forEach((image, index) => {
+        const copy = new Uint8ClampedArray(image.data);
+        videoOut.push({
+          streamIndex: packet.streamIndex,
+          data: copy.buffer,
+          width: image.width,
+          height: image.height,
+          timestampUs: baseTimestamp + Math.round(index * durationUs),
+          durationUs
+        });
+      });
+      state.nextVideoTimestampUs = baseTimestamp + durationUs * Math.max(1, images.length);
+      return;
+    }
+    const frames = (await libav.ff_decode_multi(
+      state.decoder,
+      state.packet,
+      state.frame,
+      [raw]
+    )) as LibAVJS.Frame[];
+    for (const frame of frames) {
+      const sampleRate = frame.sample_rate ?? 48_000;
+      const numberOfFrames = frame.nb_samples ?? 0;
+      if (numberOfFrames <= 0) continue;
+      const channels = audioFrameToFloat32(frame);
+      const durationUs = Math.round((numberOfFrames / sampleRate) * 1_000_000);
+      const timestampUs = state.nextAudioTimestampUs ?? packet.ptsUs;
+      state.nextAudioTimestampUs = timestampUs + durationUs;
+      audioOut.push({
+        streamIndex: packet.streamIndex,
+        timestampUs,
+        sampleRate,
+        numberOfFrames,
+        channels: channels.map((channel) => channel.buffer as ArrayBuffer)
+      });
+    }
+  }
+
+  private async flushWasmDecoders(
+    videoOut: WasmVideoFrame[],
+    audioOut: WasmAudioChunk[]
+  ): Promise<void> {
+    const libav = this.requireLibav();
+    for (const state of this.wasmDecoders.values()) {
+      const isVideo = state.stream.codec_type === STREAM_TYPE_VIDEO;
+      if (isVideo) {
+        const images = (await libav.ff_decode_multi(
+          state.decoder,
+          state.packet,
+          state.frame,
+          [],
+          { fin: true, copyoutFrame: "ImageData" }
+        )) as ImageData[];
+        const durationUs = 33_333;
+        const baseTimestamp = state.nextVideoTimestampUs ?? 0;
+        images.forEach((image, index) => {
+          const copy = new Uint8ClampedArray(image.data);
+          videoOut.push({
+            streamIndex: state.stream.index,
+            data: copy.buffer,
+            width: image.width,
+            height: image.height,
+            timestampUs: baseTimestamp + index * durationUs,
+            durationUs
+          });
+        });
+        state.nextVideoTimestampUs = baseTimestamp + durationUs * Math.max(1, images.length);
+      } else {
+        const frames = (await libav.ff_decode_multi(
+          state.decoder,
+          state.packet,
+          state.frame,
+          [],
+          { fin: true }
+        )) as LibAVJS.Frame[];
+        for (const frame of frames) {
+          const sampleRate = frame.sample_rate ?? 48_000;
+          const numberOfFrames = frame.nb_samples ?? 0;
+          if (numberOfFrames <= 0) continue;
+          const channels = audioFrameToFloat32(frame);
+          const durationUs = Math.round((numberOfFrames / sampleRate) * 1_000_000);
+          audioOut.push({
+            streamIndex: state.stream.index,
+            timestampUs: state.nextAudioTimestampUs ?? 0,
+            sampleRate,
+            numberOfFrames,
+            channels: channels.map((channel) => channel.buffer as ArrayBuffer)
+          });
+          state.nextAudioTimestampUs = (state.nextAudioTimestampUs ?? 0) + durationUs;
+        }
+      }
+    }
+  }
+
+  private async flushWasmDecoderState(): Promise<void> {
+    if (!this.libav || this.wasmDecoders.size === 0) return;
+    for (const state of this.wasmDecoders.values()) {
+      await this.libav.avcodec_flush_buffers(state.decoder);
+      state.nextAudioTimestampUs = undefined;
+      state.nextVideoTimestampUs = undefined;
+    }
   }
 
   private async buildProbe(
@@ -663,9 +886,15 @@ export class DemuxSession {
       streamIndex: stream.index,
       streamType: type,
       data: data.buffer as ArrayBuffer,
-      ptsUs: timeUs(packet.pts, packet.ptshi, stream.time_base_num, stream.time_base_den),
-      dtsUs: timeUs(packet.dts, packet.dtshi, stream.time_base_num, stream.time_base_den),
-      durationUs: timeUs(packet.duration, packet.durationhi, stream.time_base_num, stream.time_base_den),
+      ptsUs: timeUs(this.libavWrapper, packet.pts, packet.ptshi, stream.time_base_num, stream.time_base_den),
+      dtsUs: timeUs(this.libavWrapper, packet.dts, packet.dtshi, stream.time_base_num, stream.time_base_den),
+      durationUs: timeUs(
+        this.libavWrapper,
+        packet.duration,
+        packet.durationhi,
+        stream.time_base_num,
+        stream.time_base_den
+      ),
       keyframe: ((packet.flags ?? 0) & 1) === 1,
       timeBase: [stream.time_base_num, stream.time_base_den]
     };
@@ -728,4 +957,54 @@ function inferVideoColor(codec: string, profile: number | undefined): InferredCo
     };
   }
   return undefined;
+}
+
+
+type AudioSampleFormat = number;
+
+function sampleValue(value: number, format: AudioSampleFormat): number {
+  const base = format >= 5 ? format - 5 : format;
+  switch (base) {
+    case 0:
+      return (value - 128) / 128;
+    case 1:
+      return value / 32768;
+    case 2:
+      return value / 2147483648;
+    case 3:
+      return value;
+    case 4:
+      return value;
+    default:
+      return value;
+  }
+}
+
+function audioFrameToFloat32(frame: LibAVJS.Frame): Float32Array[] {
+  const count = frame.nb_samples ?? 0;
+  const channels = frame.channels ?? 1;
+  const format = frame.format;
+  const planar = format >= 5;
+  const data = frame.data;
+  const out: Float32Array[] = [];
+  if (planar && Array.isArray(data)) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      const source = data[Math.min(channel, data.length - 1)] as ArrayLike<number>;
+      const target = new Float32Array(count);
+      for (let index = 0; index < count; index += 1) {
+        target[index] = sampleValue(Number(source[index] ?? 0), format);
+      }
+      out.push(target);
+    }
+    return out;
+  }
+  const packed = data as ArrayLike<number>;
+  for (let channel = 0; channel < channels; channel += 1) {
+    const target = new Float32Array(count);
+    for (let index = 0; index < count; index += 1) {
+      target[index] = sampleValue(Number(packed[index * channels + channel] ?? 0), format);
+    }
+    out.push(target);
+  }
+  return out;
 }

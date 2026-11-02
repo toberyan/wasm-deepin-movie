@@ -11,15 +11,15 @@ It is not a G0 go/no-go decision yet.
 | Contracts | `packages/contracts`, committed JSON Schema snapshots, registry/action/settings/error tests | done |
 | Controller | `packages/player-core`, state machine, revisions, requestId dedupe, layered settings, jobs; 16 unit tests | done |
 | Source readers | `packages/source-readers`, File/HTTP/sparse, Range/ETag/200 fallback/cancel; 15 tests including 6 GiB offsets | done |
-| libav.js lock | `native/builds/toolchain.lock.json`, `native/builds/manifests/webcodecs.json`, hashed assets | partial (prebuilt ST only) |
+| libav.js lock | `native/builds/toolchain.lock.json`, prebuilt WebCodecs manifest, custom ST/MT manifests and hashes | done |
 | Demux/probe | `packages/ffmpeg-adapter` worker; real MP4 H.264/AAC, MKV HEVC/AC-3, WebM VP9/Opus, MKV subtitle streams; seek | done for supported containers |
-| Browser decode | WebCodecs video/audio workers, AudioWorklet, WebGL2 renderer, external SRT/VTT/ASS text | done for MP4 slice |
+| Browser decode | WebCodecs video/audio workers, WASM decode fallback, AudioWorklet, WebGL2 renderer, SRT/VTT and JASSUB ASS | done |
 | Browser e2e | Playwright system Chrome: open MP4, first frame, play, audio PCM, pause, seek, settings, SRT/ASS subtitles, screenshot, HTTP Range, 100 cycles | verified locally |
 | ASS/SSA | JASSUB/libass canvas-only renderer on the player clock; visual screenshot archived | verified locally |
 | Large file | 5 GiB sparse-extended valid MP4 through HTTP Range: probe, read, seek, tail read | verified locally (not movie-length) |
 | Resource release | 100 open/close cycles; invalid media rejected then recovery; final queue 0 | verified locally |
 | MCP/Companion | stdio MCP → loopback WS → browser; sessions/sources/open/settings/seek/state/capture/jobs/diagnostics; Host/Origin/token/traversal checks | verified locally |
-| Legacy/WASM fallback | AVI demuxer and H.264/AAC/AC-3 WASM decoders absent from prebuilt variant; typed `UNSUPPORTED`/`DECODE_FAILED` | not delivered |
+| Custom WASM variant | Emscripten 6.0.13 + libav.js 6.8.8 + FFmpeg 8.0; ST/MT artifacts + manifests; AVI/MPEG-4/MP3 and H.264/AAC/HEVC/AC-3 forced WASM playback verified in Chrome | done |
 
 ## Evidence paths
 
@@ -27,22 +27,24 @@ It is not a G0 go/no-go decision yet.
 - `tests/fixtures/manifest.json`
 - `tests/e2e/playback.spec.ts`
 - `native/builds/manifests/webcodecs.json`
+- `native/builds/manifests/wasm-player-p0-st.json` / `-mt.json`
+- `docs/reports/wasm-build-2026-11-02.md`
 - `docs/reports/environment-baseline.md`
-- `docs/adr/0001..0006`
+- `docs/adr/0001..0008`
 
 ## G0 questions: current evidence
 
 1. **>4 GiB random read / bounded buffers** — SparseSourceReader tests cover a
    6 GiB size and tail offsets. A real >4 GiB media file and memory curve are
    still external-environment work.
-2. **Four sample families decode/sync in a real browser** — MP4 H.264/AAC is
-   verified end-to-end. MKV HEVC/AC-3 and WebM VP9/Opus are verified at
-   demux/probe level; AC-3 needs the custom WASM audio build, and VP9 is
-   WebCodecs-only in this variant.
+2. **Four sample families decode/sync in a real browser** — MP4 H.264/AAC
+   (WebCodecs and forced WASM), MKV HEVC/AC-3 (forced WASM), AVI MPEG-4/MP3
+   (WASM), and WebM VP9/Opus (probe/route) are covered. WebM browser playback
+   remains `experimental`.
 3. **Fallback and resource release on unsupported/runtime failure/no-SAB** —
-   100 open/close cycles, invalid media, bad Origin/token and broker traversal
-   are verified. Decoder runtime failure injection and no-SAB fallback still
-   need dedicated runs.
+   100 open/close cycles, invalid media, WASM seek/decoder reset, bad
+   Origin/token and broker traversal are verified. Decoder runtime failure
+   injection and no-SAB fallback still need dedicated runs.
 4. **Color, ASS, audio and seek together** — Color/seek/audio/SRT work, and
    ASS/SSA is rendered by JASSUB/libass with the player clock; screenshot
    evidence exists. Font attachment/forced-style override remains P2.
@@ -55,10 +57,10 @@ It is not a G0 go/no-go decision yet.
 
 ## Current blockers / risks
 
-- **Custom WASM build**: no Emscripten/clang/Docker on the workstation. Without
-  this, P0-03/P0-14 and honest WASM fallback claims are blocked.
-- **HEVC/AC-3**: the prebuilt webcodecs variant has no AC-3 decoder. The MKV
-  sample is a video-only path until `decode-audio-common` lands.
+- **WASM packaging**: the custom variant is monolithic. The planned
+  `demux-common`/`decode-*` split and on-demand loading are not done.
+- **MT runtime**: MT artifacts exist, but the browser still uses the ST loader;
+  MT needs a COOP/COEP/SAB runtime and performance pass.
 - **Performance evidence**: 100-open/close and a 5 GiB sparse file are done,
   but no 1080p30 10-minute/2-hour run, real movie-length 4 GiB file, process
   memory accounting or physical-GPU performance gate exists.
@@ -69,11 +71,9 @@ It is not a G0 go/no-go decision yet.
 
 ## Next actions
 
-1. Install/pin Emscripten and produce `demux-common` + `decode-*` artifacts with
-   manifests (P0-02/P0-03).
-2. Add AVI/MPEG-4/MP3 and AC-3 WASM decode paths; wire `MediaEngine` WASM
-   decode fallback and forced-failure tests (P0-07/P0-09/P0-14).
-3. Build the project-owned Emscripten variant with AVI + MPEG-4 + MP3 +
-   H.264/AAC/AC-3 decoders and wire the WASM fallback.
-4. Run 1080p30 10-minute/2-hour benchmark and memory/soak evidence on the
+1. Split the custom variant into `demux-common`/`decode-*` packages and wire
+   on-demand loading; verify the MT artifact under COOP/COEP.
+2. Run 1080p30 10-minute/2-hour benchmark and memory/soak evidence on the
    physical machine; repeat the HTTP/Companion matrix on Windows/macOS.
+3. Add decoder runtime-failure injection and GPU context-loss recovery tests.
+4. Extend the browser matrix to Windows/macOS and decide HLS/DASH at G2.

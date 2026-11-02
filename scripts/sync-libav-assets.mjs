@@ -76,3 +76,23 @@ const manifest = {
 await writeFile(join(manifestDir, "webcodecs.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
 console.log(`copied ${files.length} libav.js artifacts to apps/web/public/libav`);
 console.log(`wrote native/builds/manifests/webcodecs.json`);
+
+// Optional project-built variant. It is produced by scripts/build-wasm.sh and
+// kept out of git; copy it when present so `?libav=wasm-player-p0` can be used.
+const customDir = join(root, "native/builds/artifacts/wasm-player-p0");
+const customFiles = [
+  "libav-wasm-player-p0.mjs",
+  "libav-6.8.8.0-wasm-player-p0.wasm.mjs",
+  "libav-6.8.8.0-wasm-player-p0.wasm.wasm",
+  "libav-6.8.8.0-wasm-player-p0.thr.mjs",
+  "libav-6.8.8.0-wasm-player-p0.thr.wasm"
+];
+try {
+  await stat(customDir);
+  for (const file of customFiles) {
+    await copyFile(join(customDir, file), join(publicDir, file));
+  }
+  console.log(`copied ${customFiles.length} custom wasm-player-p0 artifacts`);
+} catch {
+  console.log("custom wasm-player-p0 artifacts not present; skipping");
+}

@@ -113,3 +113,21 @@ Not yet delivered:
 - MCP Companion, HTTP e2e, real >4 GiB media, performance/soak reports,
   Windows/macOS matrix.
 - Desktop shell (P4).
+
+## Custom WASM fallback
+
+The project-owned variant adds AVI/MPEG-4/MP3 and H.264/HEVC/AAC/AC-3/FLAC/
+Opus decoder candidates:
+
+```bash
+source ~/tools/emsdk/emsdk_env.sh
+pnpm wasm:build
+pnpm libav:sync
+pnpm dev
+# open http://127.0.0.1:5173/?libav=wasm-player-p0
+```
+
+`?libav=wasm-player-p0` selects the built variant for the demux/decode worker;
+the default page keeps using the prebuilt WebCodecs variant. The custom AVI and
+forced-WASM tests skip automatically when the artifacts are not built. See
+`docs/reports/wasm-build-2026-11-02.md`.

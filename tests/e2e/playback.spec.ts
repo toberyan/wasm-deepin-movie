@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
@@ -46,6 +46,74 @@ async function state(page: Page): Promise<PlayerState> {
     const player = (window as unknown as PlayerWindow).__player;
     if (!player) throw new Error("player is not ready");
     return player.getState();
+  });
+}
+
+const customVariantAvailable = existsSync(
+  resolve("apps/web/public/libav/libav-wasm-player-p0.mjs")
+);
+
+async function openWasmFixture(
+  page: Page,
+  fixture: string,
+  mimeType: string,
+  name: string
+): Promise<void> {
+  const data = readFileSync(resolve("tests/fixtures/generated", fixture));
+  await page.route(`**/fixtures/${fixture}`, (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": mimeType, "Access-Control-Allow-Origin": "*" },
+      body: data
+    })
+  );
+  await page.goto("/?libav=wasm-player-p0");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const opened = await page.evaluate(
+    async ({ fixture, name, mimeType }) => {
+      const player = (window as unknown as PlayerWindow).__player;
+      if (!player) throw new Error("player is not ready");
+      const bytes = await (await fetch(`/fixtures/${fixture}`)).arrayBuffer();
+      const file = new File([bytes], name, { type: mimeType });
+      return player.invoke({
+        requestId: `wasm-open-${Date.now()}`,
+        sessionId: player.sessionId,
+        action: "media.open",
+        params: {
+          source: { kind: "file", file, name },
+          forceDecodePath: { video: "wasm", audio: "wasm" }
+        }
+      });
+    },
+    { fixture, name, mimeType }
+  );
+  expect(opened.status).toBe("applied");
+  await waitForMedia(page);
+}
+
+async function waitForWasmFirstFrame(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(snapshot && snapshot.stats.decodedVideoFrames > 0 && snapshot.stats.renderedFrames > 0);
+  });
+}
+
+async function playAndPause(page: Page): Promise<void> {
+  await page.locator(".play-button").click();
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return snapshot?.phase === "playing";
+  });
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(snapshot && snapshot.positionUs > 300_000);
+  });
+  const playing = await state(page);
+  expect(playing.stats.decodedAudioFrames).toBeGreaterThan(0);
+  await page.locator(".play-button").click();
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return snapshot?.phase === "paused";
   });
 }
 
@@ -421,4 +489,103 @@ test("survives 100 open/close cycles and invalid media", async ({ page }) => {
   expect(result.state.stats.videoQueueFrames).toBe(0);
   expect(result.state.stats.videoQueueBytes).toBe(0);
   expect(result.diagnostics.queues.videoFrames).toBe(0);
+});
+
+test("plays AVI through the custom WASM video/audio path", async ({ page }) => {
+  test.skip(!customVariantAvailable, "custom wasm-player-p0 artifacts are not built");
+  test.setTimeout(120_000);
+  const avi = readFileSync(resolve("tests/fixtures/generated/sample-mpeg4-mp3.avi"));
+  await page.route("**/fixtures/sample-mpeg4-mp3.avi", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/x-msvideo", "Access-Control-Allow-Origin": "*" },
+      body: avi
+    })
+  );
+  await page.goto("/?libav=wasm-player-p0");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const openedResult = await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-mpeg4-mp3.avi")).arrayBuffer();
+    const file = new File([bytes], "sample-mpeg4-mp3.avi", { type: "video/x-msvideo" });
+    return player.invoke({
+      requestId: `avi-open-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: {
+        source: { kind: "file", file, name: "sample-mpeg4-mp3.avi" },
+        forceDecodePath: { audio: "wasm" }
+      }
+    });
+  });
+  expect(openedResult.status).toBe("applied");
+  await waitForMedia(page);
+  const opened = await state(page);
+  expect(opened.media?.decodePaths).toMatchObject({
+    "video:0": "wasm",
+    "audio:1": "wasm"
+  });
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(snapshot && snapshot.stats.decodedVideoFrames > 0 && snapshot.stats.renderedFrames > 0);
+  });
+  const lit = await page.evaluate(() => {
+    const canvas = document.querySelector("canvas");
+    if (!canvas) return 0;
+    const copy = document.createElement("canvas");
+    copy.width = canvas.width;
+    copy.height = canvas.height;
+    const context = copy.getContext("2d");
+    if (!context) return 0;
+    context.drawImage(canvas, 0, 0);
+    const data = context.getImageData(0, 0, Math.min(120, copy.width), Math.min(90, copy.height)).data;
+    let sum = 0;
+    for (let index = 0; index < data.length; index += 4) sum += data[index] ?? 0;
+    return sum;
+  });
+  expect(lit).toBeGreaterThan(0);
+
+  await page.locator(".play-button").click();
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return snapshot?.phase === "playing";
+  });
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(snapshot && snapshot.positionUs > 300_000);
+  });
+  const playing = await state(page);
+  expect(playing.stats.decodedAudioFrames).toBeGreaterThan(0);
+  await page.locator(".play-button").click();
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return snapshot?.phase === "paused";
+  });
+});
+
+test("forces H.264/AAC through the WASM fallback", async ({ page }) => {
+  test.skip(!customVariantAvailable, "custom wasm-player-p0 artifacts are not built");
+  test.setTimeout(120_000);
+  await openWasmFixture(page, "sample-h264-aac.mp4", "video/mp4", "sample-h264-aac.mp4");
+  const opened = await state(page);
+  expect(opened.media?.decodePaths).toMatchObject({
+    "video:0": "wasm",
+    "audio:1": "wasm"
+  });
+  await waitForWasmFirstFrame(page);
+  await playAndPause(page);
+});
+
+test("forces HEVC/AC-3 through the WASM fallback", async ({ page }) => {
+  test.skip(!customVariantAvailable, "custom wasm-player-p0 artifacts are not built");
+  test.setTimeout(180_000);
+  await openWasmFixture(page, "sample-hevc-ac3.mkv", "video/x-matroska", "sample-hevc-ac3.mkv");
+  const opened = await state(page);
+  expect(opened.media?.decodePaths).toMatchObject({
+    "video:0": "wasm",
+    "audio:1": "wasm"
+  });
+  await waitForWasmFirstFrame(page);
+  await playAndPause(page);
 });

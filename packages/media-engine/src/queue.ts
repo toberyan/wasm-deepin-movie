@@ -97,6 +97,13 @@ export class VideoFrameQueue<T extends TimedFrame> {
     return due;
   }
 
+  takeFirst(): T | undefined {
+    const frame = this.frames.shift();
+    if (!frame) return undefined;
+    this.bytes -= frame.byteLength;
+    return frame;
+  }
+
   peek(): T | undefined {
     return this.frames[0];
   }

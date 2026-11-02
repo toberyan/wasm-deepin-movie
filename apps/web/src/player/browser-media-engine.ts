@@ -42,7 +42,9 @@ import {
 import {
   DemuxWorkerClient,
   type DemuxPacket,
-  type ProbeResult
+  type ProbeResult,
+  type WasmAudioChunk,
+  type WasmVideoFrame
 } from "@wasm-player/ffmpeg-adapter";
 import {
   createAudioDecoderWorker,
@@ -79,11 +81,12 @@ export interface BrowserMediaEngineOptions {
   canvas: HTMLCanvasElement;
   overlayContainer: HTMLElement;
   libavBase?: string;
+  libavVariant?: string;
   onLog?: (message: string, details?: unknown) => void;
 }
 
 const VIDEO_QUEUE_LIMITS = {
-  maxFrames: 32,
+  maxFrames: 64,
   maxBytes: 64 * 1024 * 1024,
   maxDurationUs: 2_000_000
 };
@@ -159,6 +162,7 @@ export class BrowserMediaEngine implements MediaEngine {
   private assFontData: Uint8Array | null = null;
   private readonly resizeObserver: ResizeObserver | null;
   private readonly libavBase: string | undefined;
+  private readonly libavVariant: string | undefined;
   private readonly onLog: ((message: string, details?: unknown) => void) | undefined;
 
   private phase: PlayerPhase = "idle";
@@ -184,6 +188,9 @@ export class BrowserMediaEngine implements MediaEngine {
   private probe: ProbeResult | null = null;
   private videoTrack: TrackInfo | null = null;
   private audioTrack: TrackInfo | null = null;
+  private videoWasm = false;
+  private audioWasm = false;
+  private previewFramePending = false;
   private videoQueue = new VideoFrameQueue<QueuedVideoFrame>(VIDEO_QUEUE_LIMITS);
   private readonly clock = new MediaClock("monotonic");
   private readonly settings = new Map<SettingId, EffectiveValue>();
@@ -208,6 +215,7 @@ export class BrowserMediaEngine implements MediaEngine {
   constructor(options: BrowserMediaEngineOptions) {
     this.canvas = options.canvas;
     this.libavBase = options.libavBase;
+    this.libavVariant = options.libavVariant;
     this.onLog = options.onLog;
     this.renderer = new WebGL2Renderer(options.canvas);
     this.overlay = new SubtitleOverlay(options.overlayContainer);
@@ -233,6 +241,7 @@ export class BrowserMediaEngine implements MediaEngine {
     this.stats = { ...EMPTY_STATS };
     this.audioBufferedUs = 0;
     this.lastSubtitleText = "";
+    this.previewFramePending = true;
     this.epoch += 1;
     const epoch = this.epoch;
     this.phase = "opening";
@@ -251,7 +260,8 @@ export class BrowserMediaEngine implements MediaEngine {
         workerSource as Parameters<DemuxWorkerClient["open"]>[0],
         {
           name: mediaSourceName(request.source),
-          ...(this.libavBase ? { libavBase: this.libavBase } : {})
+          ...(this.libavBase ? { libavBase: this.libavBase } : {}),
+          ...(this.libavVariant ? { libavVariant: this.libavVariant } : {})
         }
       );
     } catch (error) {
@@ -293,29 +303,57 @@ export class BrowserMediaEngine implements MediaEngine {
       const audioTrack = probe.tracks.find((track) => track.type === "audio" && track.default) ??
         probe.tracks.find((track) => track.type === "audio") ?? null;
 
+      let videoWasm = false;
       if (videoTrack) {
         const decision = routed.playbackTracks.find(
           (track) => track.type === "video" && track.index === videoTrack.index
         );
-        if (!decision?.supported || decision.path !== "webcodecs") {
+        if (!decision?.supported) {
           const reason = decision?.reason ?? "video decoder is unavailable";
           throw new PlayerError("UNSUPPORTED", reason);
         }
+        if (decision.path === "wasm") {
+          const configured = await demux.configureWasm([videoTrack.index]);
+          if (!configured.includes(videoTrack.index)) {
+            throw new PlayerError("UNSUPPORTED", "WASM video decoder could not be configured");
+          }
+          videoWasm = true;
+        } else if (decision.path !== "webcodecs") {
+          throw new PlayerError("UNSUPPORTED", decision.reason ?? "unknown video decode path");
+        }
       }
       let selectedAudio = audioTrack;
+      let audioWasm = false;
       if (audioTrack) {
         const decision = routed.playbackTracks.find(
           (track) => track.type === "audio" && track.index === audioTrack.index
         );
-        if (!decision?.supported || decision.path !== "webcodecs") {
+        if (!decision?.supported) {
           this.warnings.push(
             `audio track ${audioTrack.index} (${audioTrack.codec}) is unavailable: ${
               decision?.reason ?? "no WebCodecs audio route"
             }`
           );
           selectedAudio = null;
+        } else if (decision.path === "wasm") {
+          const configured = await demux.configureWasm([audioTrack.index]);
+          if (configured.includes(audioTrack.index)) {
+            audioWasm = true;
+          } else {
+            this.warnings.push("WASM audio decoder could not be configured");
+            selectedAudio = null;
+          }
+        } else if (decision.path !== "webcodecs") {
+          this.warnings.push(
+            `audio track ${audioTrack.index} (${audioTrack.codec}) is unavailable: ${
+              decision.reason ?? "unknown audio decode path"
+            }`
+          );
+          selectedAudio = null;
         }
       }
+      this.videoWasm = videoWasm;
+      this.audioWasm = audioWasm;
       this.videoTrack = videoTrack;
       this.audioTrack = selectedAudio;
       this.decodePaths = routed.decodePaths;
@@ -335,7 +373,7 @@ export class BrowserMediaEngine implements MediaEngine {
         subtitle: null
       };
 
-      if (videoTrack) {
+      if (videoTrack && !videoWasm) {
         const config = probe.configs[videoTrack.index];
         if (!config || config.type !== "video") {
           throw new PlayerError("UNSUPPORTED", "video track has no WebCodecs configuration");
@@ -351,42 +389,44 @@ export class BrowserMediaEngine implements MediaEngine {
 
       if (selectedAudio) {
         const config = probe.configs[selectedAudio.index];
-        if (config && config.type === "audio") {
+        if (!audioWasm && config && config.type === "audio") {
           this.audioDecoder = createAudioDecoderWorker();
           this.audioDecoder.setPcmHandler((event) => this.onAudioPcm(event));
           this.audioDecoder.setErrorHandler((error) => this.onDecodeError(error, this.epoch));
           const configured = await this.audioDecoder.configure(config, epoch);
-          if (configured.supported) {
-            const audioOutput = new AudioOutput({
-              sampleRate: selectedAudio.sampleRate ?? 48000,
-              channels: selectedAudio.channels ?? 2,
-              capacitySeconds: 2
-            });
-            audioOutput.setUnderrunHandler(() => {
-              this.stats.audioUnderruns += 1;
-              this.buffering = true;
-              this.emit({ type: "buffering", buffering: true, reason: "audio underrun" });
-            });
-            try {
-              await audioOutput.start();
-              audioOutput.setVolume(this.volume, this.muted);
-              audioOutput.setRate(this.rate);
-              this.audioOutput = audioOutput;
-            } catch (error) {
-              this.warnings.push(
-                `AudioWorklet unavailable: ${error instanceof Error ? error.message : String(error)}`
-              );
-              await audioOutput.close();
-              await this.audioDecoder.close();
-              this.audioDecoder = null;
-              this.selected.audio = null;
-              this.audioTrack = null;
-            }
-          } else {
+          if (!configured.supported) {
             this.warnings.push(
               `audio decoder rejected the config: ${configured.reason ?? "unsupported"}`
             );
             await this.audioDecoder.close();
+            this.audioDecoder = null;
+            this.selected.audio = null;
+            this.audioTrack = null;
+            selectedAudio = null;
+          }
+        }
+        if (selectedAudio) {
+          const audioOutput = new AudioOutput({
+            sampleRate: selectedAudio.sampleRate ?? 48000,
+            channels: selectedAudio.channels ?? 2,
+            capacitySeconds: 2
+          });
+          audioOutput.setUnderrunHandler(() => {
+            this.stats.audioUnderruns += 1;
+            this.buffering = true;
+            this.emit({ type: "buffering", buffering: true, reason: "audio underrun" });
+          });
+          try {
+            await audioOutput.start();
+            audioOutput.setVolume(this.volume, this.muted);
+            audioOutput.setRate(this.rate);
+            this.audioOutput = audioOutput;
+          } catch (error) {
+            this.warnings.push(
+              `AudioWorklet unavailable: ${error instanceof Error ? error.message : String(error)}`
+            );
+            await audioOutput.close();
+            await this.audioDecoder?.close();
             this.audioDecoder = null;
             this.selected.audio = null;
             this.audioTrack = null;
@@ -456,6 +496,8 @@ export class BrowserMediaEngine implements MediaEngine {
     this.selected = { video: null, audio: null, subtitle: null };
     this.videoTrack = null;
     this.audioTrack = null;
+    this.videoWasm = false;
+    this.audioWasm = false;
     this.positionUs = 0;
     this.durationUs = 0;
     this.decodingStatsReset();
@@ -539,6 +581,7 @@ export class BrowserMediaEngine implements MediaEngine {
     this.videoPacketsInFlight = 0;
     this.audioBufferedUs = 0;
     this.seekTargetUs = target;
+    this.previewFramePending = true;
     this.demuxEof = false;
     this.decoderFlushed = false;
     await this.videoDecoder?.reset(epoch);
@@ -552,6 +595,7 @@ export class BrowserMediaEngine implements MediaEngine {
     this.positionUs = target;
     this.clock.seek(target, now);
     this.feedPackets(result.packets, epoch);
+    this.processWasmOutput(result, epoch);
     if (wasPlaying) {
       this.audioOutput?.setPaused(false);
       this.clock.setSource(this.audioOutput ? "audio" : "monotonic", target, now);
@@ -1024,6 +1068,9 @@ export class BrowserMediaEngine implements MediaEngine {
           this.feedPackets(result.packets, readEpoch);
           this.stats.packetQueueBytes = result.bytes;
         }
+        if (result.wasmVideoFrames.length > 0 || result.wasmAudioChunks.length > 0) {
+          this.processWasmOutput(result, readEpoch);
+        }
         if (result.eof) {
           this.demuxEof = true;
           this.videoPacketsInFlight = 0;
@@ -1092,12 +1139,51 @@ export class BrowserMediaEngine implements MediaEngine {
     this.stats.droppedVideoFrames = this.videoQueue.droppedFrames;
   }
 
+  private processWasmOutput(
+    result: { wasmVideoFrames: WasmVideoFrame[]; wasmAudioChunks: WasmAudioChunk[] },
+    epoch: number
+  ): void {
+    if (epoch !== this.epoch || this.closed) return;
+    for (const item of result.wasmVideoFrames) {
+      const frame = new VideoFrame(new Uint8ClampedArray(item.data), {
+        format: "RGBA",
+        codedWidth: item.width,
+        codedHeight: item.height,
+        timestamp: item.timestampUs,
+        duration: item.durationUs > 0 ? item.durationUs : 33_333,
+        layout: [{ offset: 0, stride: item.width * 4 }]
+      });
+      this.onVideoFrame({ frame, epoch });
+    }
+    for (const chunk of result.wasmAudioChunks) {
+      const channels = chunk.channels.map((buffer) => new Float32Array(buffer));
+      this.appendPcm(
+        channels,
+        chunk.timestampUs,
+        chunk.sampleRate,
+        chunk.numberOfFrames,
+        epoch
+      );
+    }
+  }
+
   private onAudioPcm(event: PcmEvent): void {
     if (event.epoch !== this.epoch || this.closed) return;
-    const durationUs = (event.numberOfFrames / event.sampleRate) * 1_000_000;
-    if (event.timestampUs + durationUs < this.seekTargetUs) return;
-    this.audioOutput?.append(event.channels, event.timestampUs);
-    this.stats.decodedAudioFrames += event.numberOfFrames;
+    this.appendPcm(event.channels, event.timestampUs, event.sampleRate, event.numberOfFrames, event.epoch);
+  }
+
+  private appendPcm(
+    channels: Float32Array[],
+    timestampUs: number,
+    sampleRate: number,
+    numberOfFrames: number,
+    epoch: number
+  ): void {
+    if (epoch !== this.epoch || this.closed) return;
+    const durationUs = (numberOfFrames / sampleRate) * 1_000_000;
+    if (timestampUs + durationUs < this.seekTargetUs) return;
+    this.audioOutput?.append(channels, timestampUs);
+    this.stats.decodedAudioFrames += numberOfFrames;
     this.audioBufferedUs += durationUs;
     if (this.buffering) {
       this.buffering = false;
@@ -1136,7 +1222,11 @@ export class BrowserMediaEngine implements MediaEngine {
     if (this.lastStatsEmit === 0) this.lastStatsEmit = now;
     const previousPosition = this.positionUs;
     const mediaTime = this.currentMediaTime(now);
-    const due = this.videoQueue.takeDue(mediaTime);
+    let due = this.videoQueue.takeDue(mediaTime);
+    if (!due && this.previewFramePending && this.phase !== "playing") {
+      due = this.videoQueue.takeFirst();
+      if (due) this.previewFramePending = false;
+    }
     if (due) {
       this.renderer.setSettings({
         brightness: this.settingValue("video.brightness", 0),

@@ -93,6 +93,7 @@ export function App() {
           canvas,
           overlayContainer: overlay,
           libavBase: new URL("/libav/", window.location.origin).href,
+          libavVariant: new URLSearchParams(window.location.search).get("libav") ?? undefined,
           onLog: (logMessage, details) => console.debug("[player]", logMessage, details)
         });
         controller = new PlayerController({

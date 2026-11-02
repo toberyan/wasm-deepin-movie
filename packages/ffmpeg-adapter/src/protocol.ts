@@ -53,11 +53,30 @@ export interface DemuxPacket {
   timeBase: [number, number];
 }
 
+export interface WasmVideoFrame {
+  streamIndex: number;
+  data: ArrayBuffer;
+  width: number;
+  height: number;
+  timestampUs: number;
+  durationUs: number;
+}
+
+export interface WasmAudioChunk {
+  streamIndex: number;
+  timestampUs: number;
+  sampleRate: number;
+  numberOfFrames: number;
+  channels: ArrayBuffer[];
+}
+
 export interface ReadResult {
   packets: DemuxPacket[];
   bytes: number;
   eof: boolean;
   eagain: boolean;
+  wasmVideoFrames: WasmVideoFrame[];
+  wasmAudioChunks: WasmAudioChunk[];
 }
 
 export interface SeekResult {
@@ -66,6 +85,8 @@ export interface SeekResult {
   errorUs: number;
   packets: DemuxPacket[];
   eof: boolean;
+  wasmVideoFrames: WasmVideoFrame[];
+  wasmAudioChunks: WasmAudioChunk[];
 }
 
 export interface SerializedError {
@@ -80,7 +101,7 @@ export type DemuxRequest =
       type: "open";
       requestId: number;
       source: WorkerSource;
-      options?: { name?: string; libavBase?: string };
+      options?: { name?: string; libavBase?: string; libavVariant?: string };
     }
   | {
       type: "read";
@@ -92,6 +113,11 @@ export type DemuxRequest =
       type: "seek";
       requestId: number;
       positionUs: number;
+    }
+  | {
+      type: "configure-wasm";
+      requestId: number;
+      streamIndexes: number[];
     }
   | {
       type: "close";

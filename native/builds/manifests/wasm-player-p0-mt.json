@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "abi": "wasm-player-1",
+  "variant": {
+    "name": "wasm-player-p0",
+    "threads": "mt",
+    "simd": false
+  },
+  "libavjs": {
+    "version": "6.8.8",
+    "build": "6.8.8.0"
+  },
+  "ffmpeg": {
+    "version": "8.0",
+    "license": "LGPL-2.1-or-later"
+  },
+  "components": [
+    "avformat",
+    "avcodec",
+    "swresample",
+    "swscale",
+    "format-mp4",
+    "format-webm",
+    "demuxer-matroska",
+    "demuxer-avi",
+    "demuxer-flv",
+    "demuxer-mpegts",
+    "demuxer-mpeg",
+    "demuxer-mp3",
+    "format-aac",
+    "format-ogg",
+    "format-flac",
+    "format-wav",
+    "parser-h264",
+    "parser-hevc",
+    "parser-vp8",
+    "parser-vp9",
+    "parser-av1",
+    "parser-aac",
+    "parser-mp3",
+    "parser-mpeg4video",
+    "parser-mpegaudio",
+    "parser-ac3",
+    "parser-opus",
+    "parser-flac",
+    "decoder-h264",
+    "decoder-hevc",
+    "decoder-aac",
+    "decoder-ac3",
+    "decoder-mpeg4",
+    "decoder-mp3",
+    "decoder-flac",
+    "decoder-libopus",
+    "bsf-extract_extradata",
+    "bsf-vp9_metadata",
+    "bsf-av1_metadata",
+    "bsf-h264_metadata",
+    "bsf-hevc_metadata"
+  ],
+  "demuxers": [
+    "matroska",
+    "avi",
+    "flv",
+    "mpegts",
+    "mpeg",
+    "mp3"
+  ],
+  "decoders": [
+    "h264",
+    "hevc",
+    "aac",
+    "ac3",
+    "mpeg4",
+    "mp3",
+    "flac",
+    "libopus"
+  ],
+  "parsers": [
+    "h264",
+    "hevc",
+    "vp8",
+    "vp9",
+    "av1",
+    "aac",
+    "mp3",
+    "mpeg4video",
+    "mpegaudio",
+    "ac3",
+    "opus",
+    "flac"
+  ],
+  "artifacts": [
+    {
+      "path": "native/builds/artifacts/wasm-player-p0/libav-6.8.8.0-wasm-player-p0.thr.mjs",
+      "bytes": 250754,
+      "sha256": "ec91e3785469364b21353f3e2066f8d77995db11d320992f7f653bc93a6a58a8"
+    },
+    {
+      "path": "native/builds/artifacts/wasm-player-p0/libav-6.8.8.0-wasm-player-p0.thr.wasm",
+      "bytes": 4234268,
+      "sha256": "66a7bf7a0719154a9df7927d6fde1f2af5809e6ab4066576b83b9eae7dce84e7"
+    },
+    {
+      "path": "native/builds/artifacts/wasm-player-p0/libav-wasm-player-p0.mjs",
+      "bytes": 26848,
+      "sha256": "ff2a51ffd2e984702a253b93f70408304172f168c8693995a034d41f7a3aec43"
+    }
+  ],
+  "license": {
+    "spdx": "LGPL-2.1-or-later",
+    "notice": "docs/legal/third-party.md"
+  },
+  "builtAt": "2026-11-02T12:51:00.226Z"
+}

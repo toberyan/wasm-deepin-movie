@@ -12,6 +12,9 @@ export default tseslint.config(
       "**/playwright-report/**",
       "**/test-results/**",
       "apps/web/public/**",
+      "native/builds/artifacts/**",
+      "test-results/**",
+      "playwright-report/**",
       "docs/**"
     ]
   },

@@ -23,7 +23,9 @@
     "fixtures": "bash scripts/make-fixtures.sh",
     "check": "pnpm lint && pnpm typecheck && pnpm schema:check && pnpm test && pnpm depcruise",
     "libav:sync": "node scripts/sync-libav-assets.mjs",
-    "start:companion": "tsx apps/companion/src/cli.ts --allow-root tests/fixtures/generated"
+    "start:companion": "tsx apps/companion/src/cli.ts --allow-root tests/fixtures/generated",
+    "wasm:build": "bash scripts/build-wasm.sh --variant wasm-player-p0 --threads st",
+    "wasm:build:mt": "bash scripts/build-wasm.sh --variant wasm-player-p0 --threads mt"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",

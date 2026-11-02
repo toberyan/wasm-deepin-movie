@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
   "abi": "wasm-player-1",
-  "generatedAt": "2026-11-02T00:00:00Z",
+  "generatedAt": "2026-11-02T12:30:00Z",
   "toolchain": {
     "node": "24.21.0",
     "pnpm": "11.28.9",
     "typescript": "5.9.3",
     "emscripten": {
-      "version": null,
-      "status": "not installed on the P0 workstation; prebuilt libav.js NPM artifacts are used for the first vertical slice",
-      "customBuildStatus": "pending: demux-common, decode-video-common, decode-audio-common ST/MT builds"
+      "version": "6.0.13",
+      "sdk": "emsdk latest (sdk-releases-eb132757325583b787fe9414b09afea9442b72ad-64bit)",
+      "status": "installed at ~/tools/emsdk; build scripts use emsdk_env.sh"
     },
-    "clang": null,
+    "clang": "Emscripten bundled clang (emcc 6.0.13)",
     "docker": null
   },
   "libavjs": {
@@ -21,13 +21,25 @@
     "bridgePackage": "libavjs-webcodecs-bridge",
     "bridgeVersion": "0.3.2",
     "license": "LGPL-2.1-or-later",
-    "source": "https://www.npmjs.com/package/@libav.js/variant-webcodecs"
+    "source": "https://www.npmjs.com/package/@libav.js/variant-webcodecs",
+    "custom": {
+      "version": "6.8.8",
+      "ffmpeg": "8.0",
+      "variant": "wasm-player-p0",
+      "manifest": "native/builds/manifests/wasm-player-p0-st.json",
+      "manifestSt": "native/builds/manifests/wasm-player-p0-st.json",
+      "manifestMt": "native/builds/manifests/wasm-player-p0-mt.json"
+    }
   },
   "ffmpeg": {
     "source": "bundled by the locked libav.js artifact",
     "license": "LGPL-2.1-or-later",
     "customConfigure": "pending; the published variant is not a substitute for the project build manifest",
-    "note": "System FFmpeg 6.1.5-0deepin4 is GPL and is used only for reference output and test fixture generation."
+    "note": "System FFmpeg 6.1.5-0deepin4 is GPL and is used only for reference output and test fixture generation.",
+    "customBuildScript": "scripts/build-wasm.sh",
+    "customFragments": "native/builds/fragments-p0.json",
+    "customVariant": "wasm-player-p0",
+    "customStatus": "ST and MT builds produced and hashed; manifests native/builds/manifests/wasm-player-p0-st.json and -mt.json"
   },
   "browser": {
     "primary": "Chrome 156.0.8078.47",

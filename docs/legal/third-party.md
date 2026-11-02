@@ -17,6 +17,16 @@ release only after the license review in the development plan is complete.
 | `@modelcontextprotocol/sdk` | 1.32.2 | MIT | MCP server/client transport. |
 | `ws` | 8.22.1 | MIT | Loopback WebSocket control bridge. |
 
+## Project-owned WASM variant
+
+`native/builds/fragments-p0.json` builds FFmpeg 8.0/libav.js 6.8.8 with AVI,
+MPEG-4, MP3, H.264, HEVC, AAC, AC-3, FLAC and Opus components. These codecs have
+patent/licensing obligations independent of the LGPL source code. The build
+script retains FFmpeg/libav.js source tarballs in a local cache; only the build
+scripts, fragments and hash manifests are committed. Do not distribute the
+custom WASM artifacts until the LGPL notice/source offer and codec patent
+review are complete.
+
 ## Test fixtures
 
 The MP4/MKV/WebM/AVI fixtures under `tests/fixtures/generated/` are synthetic

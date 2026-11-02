@@ -8,12 +8,13 @@ measurements, not the G0 benchmark gate.
 
 | Scenario | Result | Notes |
 | --- | --- | --- |
-| Full e2e suite | 6 tests / 24.1 s | MP4 playback, seek/settings/SRT screenshot, ASS/JASSUB, HTTP Range, 100 cycles, MCP Companion |
+| Full e2e suite | 9 tests / 28.8 s | MP4 WebCodecs, seek/settings/SRT screenshot, ASS/JASSUB, HTTP Range, 100 cycles, MCP Companion, AVI/WASM, forced H.264/AAC and HEVC/AC-3 WASM |
 | 100 open/close cycles | 16.4 s, 0 errors | Same 2 s MP4; final state idle; video queue 0; engine workers recreated each cycle |
 | MP4 demux/probe (2 s, 640×360) | ~107 ms | Node/Vitest, includes libav WASM init |
 | 5 GiB sparse MP4 probe + seek | 84 ms test body | HTTP Range server over a sparse-extended valid MP4; moov at start |
 | Demux samples | MP4 H.264/AAC, MKV HEVC/AC-3, WebM VP9/Opus, MKV subtitle | Probe/read/seek; AVI intentionally unsupported by the prebuilt variant |
 | Web build | ~2.2 s | Main bundle ~498 kB, demux worker ~186 kB, JASSUB WASM ~2.1/2.2 MB |
+| Custom WASM build | ST ~64 s; MT ~63 s | FFmpeg 8.0; ST wasm ~3.9 MB; MT wasm ~4.1 MB |
 
 ## Limitations
 

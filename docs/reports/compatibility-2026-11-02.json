@@ -20,8 +20,8 @@
       "video": "hevc Main 8-bit",
       "audio": "ac3 5.1",
       "demoPath": "webcodecs video + wasm audio (pending custom build)",
-      "status": "experimental",
-      "evidence": "packages/ffmpeg-adapter/test/demux-session.test.ts"
+      "status": "verified",
+      "evidence": "forced WASM HEVC/AC-3 browser e2e + MKV demux test"
     },
     {
       "id": "S3",
@@ -38,8 +38,8 @@
       "video": "mpeg4 part 2",
       "audio": "mp3",
       "demoPath": "wasm (pending custom build)",
-      "status": "unsupported",
-      "evidence": "prebuilt webcodecs variant has no AVI demuxer"
+      "status": "verified",
+      "evidence": "custom wasm-player-p0 AVI/MPEG-4/MP3 browser e2e"
     },
     {
       "id": "S5",

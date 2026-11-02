@@ -67,7 +67,10 @@ export class DemuxWorkerClient {
     };
   }
 
-  open(source: WorkerSource, options?: { name?: string; libavBase?: string }): Promise<ProbeResult> {
+  open(
+    source: WorkerSource,
+    options?: { name?: string; libavBase?: string; libavVariant?: string }
+  ): Promise<ProbeResult> {
     return this.request<ProbeResult>(
       { type: "open", requestId: 0, source, options },
       30_000
@@ -78,6 +81,13 @@ export class DemuxWorkerClient {
     return this.request<ReadResult>(
       { type: "read", requestId: 0, maxBytes, maxPackets },
       15_000
+    );
+  }
+
+  configureWasm(streamIndexes: number[]): Promise<number[]> {
+    return this.request<number[]>(
+      { type: "configure-wasm", requestId: 0, streamIndexes },
+      20_000
     );
   }
 
