@@ -427,6 +427,8 @@ export class PlayerController {
         return this.closeMedia();
       case ACTION_IDS.mediaProbe:
         return this.probeMedia(mediaProbeInputSchema.parse(params));
+      case ACTION_IDS.sourcesList:
+        return { status: "applied", output: { sources: [] }, bumpRevision: false };
       case ACTION_IDS.playbackPlay:
         return this.play();
       case ACTION_IDS.playbackPause:
@@ -733,6 +735,7 @@ export class PlayerController {
     return {
       status: "applied",
       bumpRevision: true,
+      output: { values: effective },
       requested: input,
       effective,
       events: [{ type: "settingsApplied", payload: effective }]
@@ -822,11 +825,13 @@ export class PlayerController {
       effective[id] = value;
     }
     this.applyEffectiveToSnapshot(effective);
+    const allEffective = Object.fromEntries(this.effective);
     return {
       status: "applied",
       bumpRevision: true,
+      output: { requested: patch, effective: allEffective },
       requested: patch,
-      effective: Object.fromEntries(this.effective),
+      effective: allEffective,
       events: [{ type: "settingsApplied", payload: effective }]
     };
   }
@@ -853,6 +858,7 @@ export class PlayerController {
     return {
       status: "applied",
       bumpRevision: true,
+      output: { values: effective },
       effective,
       events: [{ type: "settingsApplied", payload: effective }]
     };

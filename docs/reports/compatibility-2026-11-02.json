@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-02",
+  "browser": "Chrome 156.0.8078.47",
+  "platform": "Deepin 25",
+  "artifact": "@libav.js/variant-webcodecs@6.10.9",
+  "samples": [
+    {
+      "id": "S1",
+      "container": "mp4",
+      "video": "h264 High 8-bit",
+      "audio": "aac-lc",
+      "demoPath": "webcodecs",
+      "status": "verified",
+      "evidence": "tests/e2e/playback.spec.ts, packages/ffmpeg-adapter/test/demux-session.test.ts"
+    },
+    {
+      "id": "S2",
+      "container": "matroska",
+      "video": "hevc Main 8-bit",
+      "audio": "ac3 5.1",
+      "demoPath": "webcodecs video + wasm audio (pending custom build)",
+      "status": "experimental",
+      "evidence": "packages/ffmpeg-adapter/test/demux-session.test.ts"
+    },
+    {
+      "id": "S3",
+      "container": "webm",
+      "video": "vp9",
+      "audio": "opus",
+      "demoPath": "webcodecs",
+      "status": "experimental",
+      "evidence": "probe/route verified; no browser playback e2e yet"
+    },
+    {
+      "id": "S4",
+      "container": "avi",
+      "video": "mpeg4 part 2",
+      "audio": "mp3",
+      "demoPath": "wasm (pending custom build)",
+      "status": "unsupported",
+      "evidence": "prebuilt webcodecs variant has no AVI demuxer"
+    },
+    {
+      "id": "S5",
+      "container": "matroska",
+      "video": "h264",
+      "audio": "aac",
+      "subtitle": "subrip/ass external",
+      "demoPath": "webcodecs",
+      "status": "verified",
+      "evidence": "SRT/ASS browser e2e + JASSUB screenshot"
+    }
+  ]
+}

@@ -14,9 +14,12 @@ It is not a G0 go/no-go decision yet.
 | libav.js lock | `native/builds/toolchain.lock.json`, `native/builds/manifests/webcodecs.json`, hashed assets | partial (prebuilt ST only) |
 | Demux/probe | `packages/ffmpeg-adapter` worker; real MP4 H.264/AAC, MKV HEVC/AC-3, WebM VP9/Opus, MKV subtitle streams; seek | done for supported containers |
 | Browser decode | WebCodecs video/audio workers, AudioWorklet, WebGL2 renderer, external SRT/VTT/ASS text | done for MP4 slice |
-| Browser e2e | Playwright system Chrome: open MP4, first frame, play, audio PCM, pause, seek, settings, subtitles, screenshot | verified locally |
-| Legacy/WASM fallback | AVI demuxer and H.264/AAC WASM decoders absent from prebuilt variant; typed `UNSUPPORTED`/`DECODE_FAILED` | not delivered |
-| MCP/Companion | Design/contract placeholders only | not delivered |
+| Browser e2e | Playwright system Chrome: open MP4, first frame, play, audio PCM, pause, seek, settings, SRT/ASS subtitles, screenshot, HTTP Range, 100 cycles | verified locally |
+| ASS/SSA | JASSUB/libass canvas-only renderer on the player clock; visual screenshot archived | verified locally |
+| Large file | 5 GiB sparse-extended valid MP4 through HTTP Range: probe, read, seek, tail read | verified locally (not movie-length) |
+| Resource release | 100 open/close cycles; invalid media rejected then recovery; final queue 0 | verified locally |
+| MCP/Companion | stdio MCP → loopback WS → browser; sessions/sources/open/settings/seek/state/capture/jobs/diagnostics; Host/Origin/token/traversal checks | verified locally |
+| Legacy/WASM fallback | AVI demuxer and H.264/AAC/AC-3 WASM decoders absent from prebuilt variant; typed `UNSUPPORTED`/`DECODE_FAILED` | not delivered |
 
 ## Evidence paths
 
@@ -37,15 +40,18 @@ It is not a G0 go/no-go decision yet.
    demux/probe level; AC-3 needs the custom WASM audio build, and VP9 is
    WebCodecs-only in this variant.
 3. **Fallback and resource release on unsupported/runtime failure/no-SAB** —
-   The architecture and epoch/drop paths exist; runtime failure injection and
-   100-open/close accounting are not yet run.
-4. **Color, ASS, audio and seek together** — Color/seek/audio work in the MP4
-   slice. ASS styling (JASSUB/libass) is not integrated; only text extraction.
+   100 open/close cycles, invalid media, bad Origin/token and broker traversal
+   are verified. Decoder runtime failure injection and no-SAB fallback still
+   need dedicated runs.
+4. **Color, ASS, audio and seek together** — Color/seek/audio/SRT work, and
+   ASS/SSA is rendered by JASSUB/libass with the player clock; screenshot
+   evidence exists. Font attachment/forced-style override remains P2.
 5. **Deepin/Linux WebCodecs/GPU behavior** — Chrome 156 on the P0 workstation
    reports WebCodecs + WebGL2; hardware decode is deliberately reported as
    `unknown` without diagnostics evidence.
-6. **Agent via Companion equals UI** — Not delivered; the controller registry
-   and dedupe/revision semantics are ready for the SDK/MCP adapter.
+6. **Agent via Companion equals UI** — Verified end-to-end: MCP client lists
+   sessions/sources, opens a broker source, applies settings, seeks, reads
+   state, creates/polls a screenshot job and reads diagnostics.
 
 ## Current blockers / risks
 
@@ -53,12 +59,13 @@ It is not a G0 go/no-go decision yet.
   this, P0-03/P0-14 and honest WASM fallback claims are blocked.
 - **HEVC/AC-3**: the prebuilt webcodecs variant has no AC-3 decoder. The MKV
   sample is a video-only path until `decode-audio-common` lands.
-- **ASS styling**: text extraction is not a substitute for libass layout. The
-  design requires JASSUB/libass for P0-11.
-- **Performance evidence**: no 10-minute playback, 100-open/close, memory
-  accounting or real >4 GiB run has been executed. Headless e2e is functional
-  evidence only, not a performance gate.
-- **Companion/MCP**: not implemented; no security/Origin/token evidence yet.
+- **Performance evidence**: 100-open/close and a 5 GiB sparse file are done,
+  but no 1080p30 10-minute/2-hour run, real movie-length 4 GiB file, process
+  memory accounting or physical-GPU performance gate exists.
+- **Runtime failure injection**: decoder crash/recovery and GPU context loss
+  are not yet exercised.
+- **Companion distribution**: the local stdio/loopback bridge works, but a
+  signed/standalone package and remote relay are not part of this slice.
 
 ## Next actions
 
@@ -66,7 +73,7 @@ It is not a G0 go/no-go decision yet.
    manifests (P0-02/P0-03).
 2. Add AVI/MPEG-4/MP3 and AC-3 WASM decode paths; wire `MediaEngine` WASM
    decode fallback and forced-failure tests (P0-07/P0-09/P0-14).
-3. Integrate JASSUB/libass for ASS with player-clock rendering (P0-11).
-4. Implement Companion stdio/loopback + SDK e2e (P0-13).
-5. Run benchmark/soak evidence on the physical machine and write
-   `docs/reports/performance-*.md` / `soak-*.md`.
+3. Build the project-owned Emscripten variant with AVI + MPEG-4 + MP3 +
+   H.264/AAC/AC-3 decoders and wire the WASM fallback.
+4. Run 1080p30 10-minute/2-hour benchmark and memory/soak evidence on the
+   physical machine; repeat the HTTP/Companion matrix on Windows/macOS.

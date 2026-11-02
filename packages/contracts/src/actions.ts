@@ -53,6 +53,7 @@ export const ACTION_IDS = {
   mediaOpen: "media.open",
   mediaClose: "media.close",
   mediaProbe: "media.probe",
+  sourcesList: "sources.list",
   playbackPlay: "playback.play",
   playbackPause: "playback.pause",
   playbackStop: "playback.stop",
@@ -141,6 +142,21 @@ export const mediaOpenInputSchema = z
   .strict();
 
 export const mediaProbeInputSchema = z.object({ source: mediaSourceSchema }).strict();
+
+export const sourcesListOutputSchema = z
+  .object({
+    sources: z.array(
+      z
+        .object({
+          sourceId: z.string().min(1),
+          name: z.string().min(1),
+          sizeBytes: z.number().nonnegative(),
+          url: z.string().optional()
+        })
+        .strict()
+    )
+  })
+  .strict();
 
 export const mediaOpenOutputSchema = z
   .object({ media: mediaInfoSchema })
@@ -326,20 +342,24 @@ export const hostRequestInputSchema = z
   })
   .strict();
 
+export const sessionInfoSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    title: z.string().optional(),
+    mediaName: z.string().optional(),
+    phase: z.string().optional(),
+    connectedAt: z.number().optional()
+  })
+  .strict();
+
 export const sessionsListOutputSchema = z
   .object({
-    sessions: z.array(
-      z
-        .object({
-          sessionId: z.string().min(1),
-          title: z.string().optional(),
-          mediaName: z.string().optional(),
-          phase: z.string().optional(),
-          connectedAt: z.number().optional()
-        })
-        .strict()
-    )
+    sessions: z.array(sessionInfoSchema)
   })
+  .strict();
+
+export const sessionsAttachOutputSchema = z
+  .object({ session: sessionInfoSchema })
   .strict();
 
 export const configExportOutputSchema = z

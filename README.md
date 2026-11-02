@@ -27,6 +27,37 @@ P0 prebuilt variant supports MP4/Matroska/WebM/Ogg/FLAC/WAV demuxing; H.264/H.26
 VP8/VP9/AV1 use WebCodecs. See the support matrix in the P0 report before
 assuming a format works.
 
+## Companion / Agent
+
+```bash
+pnpm build
+node apps/companion/dist/cli.js --stdio --port 4178 \
+  --allow-root tests/fixtures/generated
+# open http://127.0.0.1:4178/ so the browser session connects
+```
+
+MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "wasm-player": {
+      "command": "node",
+      "args": [
+        "apps/companion/dist/cli.js",
+        "--stdio",
+        "--allow-root",
+        "tests/fixtures/generated"
+      ]
+    }
+  }
+}
+```
+
+The Companion binds loopback only, validates Host/Origin/token, brokers only
+explicitly allowed roots, and keeps MCP protocol output on stdout. See
+`docs/adr/0007-companion-security.md`.
+
 ## Checks
 
 ```bash
@@ -46,7 +77,7 @@ pnpm build
 
 ```text
 apps/web                 React UI + BrowserMediaEngine composition
-apps/companion           (planned) MCP stdio + loopback control bridge
+apps/companion           MCP stdio + loopback control bridge + media broker
 packages/contracts       actions, settings, events, errors, JSON Schema
 packages/player-core     Controller, revisions, jobs, layered settings
 packages/media-engine    ports, clock, frame queue, codec routing

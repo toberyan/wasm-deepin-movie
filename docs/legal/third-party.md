@@ -13,6 +13,9 @@ release only after the license review in the development plan is complete.
 | Vite / Vitest / TypeScript | pinned | MIT / Apache-2.0 | Build and test tooling, not distributed as runtime. |
 | Zod | 4.6.7 | MIT | Contracts and schema generation. |
 | System FFmpeg | 6.1.5-0deepin4 | GPL build | Used only for test fixture generation and reference output. It must not enter a distributed WASM build or product artifact. |
+| JASSUB | 2.5.23 | MIT | ASS/SSA rendering wrapper; bundles libass WASM. Libass is ISC-licensed; verify the bundled notice/source requirements before distribution. |
+| `@modelcontextprotocol/sdk` | 1.32.2 | MIT | MCP server/client transport. |
+| `ws` | 8.22.1 | MIT | Loopback WebSocket control bridge. |
 
 ## Test fixtures
 

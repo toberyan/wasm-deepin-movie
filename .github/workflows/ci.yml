@@ -23,6 +23,7 @@ jobs:
       - run: pnpm test
       - run: pnpm depcruise
       - run: pnpm --filter @wasm-player/web build
+      - run: pnpm --filter @wasm-player/companion build
       - uses: actions/upload-artifact@v4
         with:
           name: web-build
@@ -43,6 +44,8 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm libav:sync
+      - run: pnpm --filter @wasm-player/web build
+      - run: pnpm --filter @wasm-player/companion build
       - run: pnpm exec playwright test --reporter=list
       - uses: actions/upload-artifact@v4
         if: always()

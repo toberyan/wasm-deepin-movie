@@ -32,7 +32,9 @@ import {
   presetsSaveInputSchema,
   seekInputSchema,
   seekOutputSchema,
+  sessionsAttachOutputSchema,
   sessionsListOutputSchema,
+  sourcesListOutputSchema,
   setRateInputSchema,
   setRateOutputSchema,
   setVolumeInputSchema,
@@ -228,7 +230,7 @@ const playbackActions = [
     title: { zh: "循环模式", en: "Loop mode" },
     description: { zh: "设置关闭、单文件或列表循环。", en: "Set off, media or playlist loop." },
     inputSchema: loopSetInputSchema,
-    outputSchema: emptyOutput,
+    outputSchema: settingsApplyOutputSchema,
     requires: [],
     media: "optional",
     cancellable: false,
@@ -240,6 +242,20 @@ const playbackActions = [
 ];
 
 const trackActions = [
+  define({
+    id: ACTION_IDS.sourcesList,
+    title: { zh: "源列表", en: "List sources" },
+    description: { zh: "列出已授权目录中可供播放的媒体源。", en: "List playable media sources in authorized directories." },
+    inputSchema: emptyInput,
+    outputSchema: sourcesListOutputSchema,
+    requires: [],
+    media: "forbidden",
+    cancellable: false,
+    longRunning: false,
+    events: [],
+    ui: { group: "media", keywords: ["sources", "files", "源"], hidden: true },
+    mcpTool: "sources_list"
+  }),
   define({
     id: ACTION_IDS.tracksList,
     title: { zh: "轨道列表", en: "List tracks" },
@@ -473,7 +489,7 @@ const hostActions = [
     title: { zh: "设置界面", en: "Set UI" },
     description: { zh: "设置侧栏、主题、命令面板、全屏或画中画。", en: "Set panel, theme, command palette, fullscreen or PiP." },
     inputSchema: uiSetInputSchema,
-    outputSchema: emptyOutput,
+    outputSchema: settingsApplyOutputSchema,
     requires: [],
     media: "optional",
     cancellable: false,
@@ -515,7 +531,7 @@ const hostActions = [
     title: { zh: "附加会话", en: "Attach session" },
     description: { zh: "选择要控制的播放会话，避免控制错实例。", en: "Select the playback session to control." },
     inputSchema: z.object({ sessionId: z.string().min(1) }).strict(),
-    outputSchema: stateGetOutputSchema,
+    outputSchema: sessionsAttachOutputSchema,
     requires: [],
     media: "forbidden",
     cancellable: false,

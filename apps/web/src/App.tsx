@@ -9,6 +9,7 @@ import {
 import { PlayerController } from "@wasm-player/player-core";
 import { BrowserMediaEngine } from "./player/browser-media-engine";
 import { browserHost } from "./player/browser-host";
+import { CompanionClient, type CompanionBootstrap } from "./player/companion-client";
 
 function formatTime(us: number): string {
   if (!Number.isFinite(us) || us < 0) return "0:00";
@@ -65,6 +66,7 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showPlaylist, setShowPlaylist] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [agentConnected, setAgentConnected] = useState(false);
   const requestSeq = useRef(0);
 
   useEffect(() => {
@@ -73,38 +75,58 @@ export function App() {
     if (!canvas || !overlay) return;
     let active = true;
     let controller: PlayerController | null = null;
-    try {
-      const engine = new BrowserMediaEngine({
-        canvas,
-        overlayContainer: overlay,
-        libavBase: new URL("/libav/", window.location.origin).href,
-        onLog: (logMessage, details) => console.debug("[player]", logMessage, details)
-      });
-      controller = new PlayerController({
-        engine,
-        sessionId: "web-main",
-        host: browserHost
-      });
-      controllerRef.current = controller;
-      const update = () => {
-        if (active) setSnapshot(controller!.getState());
-      };
-      const unsubscribe = controller.subscribe(update);
-      update();
-      (window as Window & { __player?: PlayerController }).__player = controller;
-      return () => {
-        active = false;
-        unsubscribe();
-        controllerRef.current = null;
-        void controller?.dispose();
-      };
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-      return () => {
-        active = false;
-        void controller?.dispose();
-      };
-    }
+    let companion: CompanionClient | null = null;
+    let unsubscribe: (() => void) | null = null;
+    const start = async () => {
+      let bootstrap: CompanionBootstrap | null = null;
+      try {
+        const response = await fetch("/api/bootstrap", { headers: { Accept: "application/json" } });
+        if (response.ok && response.headers.get("content-type")?.includes("application/json")) {
+          bootstrap = (await response.json()) as CompanionBootstrap;
+        }
+      } catch {
+        // Static/dev hosting without a Companion.
+      }
+      if (!active) return;
+      try {
+        const engine = new BrowserMediaEngine({
+          canvas,
+          overlayContainer: overlay,
+          libavBase: new URL("/libav/", window.location.origin).href,
+          onLog: (logMessage, details) => console.debug("[player]", logMessage, details)
+        });
+        controller = new PlayerController({
+          engine,
+          sessionId: bootstrap?.sessionId ?? "web-main",
+          host: browserHost
+        });
+        if (!active) {
+          await engine.dispose();
+          return;
+        }
+        controllerRef.current = controller;
+        const update = () => {
+          if (active) setSnapshot(controller!.getState());
+        };
+        unsubscribe = controller.subscribe(update);
+        update();
+        (window as Window & { __player?: PlayerController }).__player = controller;
+        if (bootstrap) {
+          companion = new CompanionClient(bootstrap, controller, setAgentConnected);
+          companion.connect();
+        }
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+    };
+    void start();
+    return () => {
+      active = false;
+      unsubscribe?.();
+      companion?.disconnect();
+      controllerRef.current = null;
+      void controller?.dispose();
+    };
   }, []);
 
   useEffect(() => {
@@ -276,8 +298,11 @@ export function App() {
           >
             设置
           </button>
-          <span className="agent-status" title="Companion 尚未连接">
-            <span className="dot" /> Agent 离线
+          <span
+            className={`agent-status ${agentConnected ? "connected" : ""}`}
+            title={agentConnected ? "Companion 已连接" : "Companion 尚未连接"}
+          >
+            <span className="dot" /> {agentConnected ? "Agent 已连接" : "Agent 离线"}
           </span>
         </div>
       </header>

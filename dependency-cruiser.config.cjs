@@ -60,8 +60,11 @@ module.exports = {
           "(^|/)index\\.ts$",
           "(^|/)main\\.tsx$",
           "(^|/).*\\.worker\\.ts$",
+          "\\.d\\.ts$",
           "(^|/)vite\\.config\\.ts$",
           "(^|/)vitest\\.config\\.ts$",
+          "(^|/)playwright\\.config\\.ts$",
+          "(^|/)tsup\\.config\\.ts$",
           "(^|/)scripts/"
         ]
       },

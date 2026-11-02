@@ -12,3 +12,4 @@ test-results/
 apps/web/public/libav/*.wasm
 apps/web/public/libav/*.mjs
 !apps/web/public/libav/.gitkeep
+tests/fixtures/generated/large-sparse.mp4

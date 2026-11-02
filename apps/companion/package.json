@@ -1,0 +1,23 @@
+{
+  "name": "@wasm-player/companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/cli.ts",
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsup"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@wasm-player/contracts": "workspace:*",
+    "@wasm-player/mcp-server": "workspace:*",
+    "ws": "8.22.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.2",
+    "tsx": "4.23.15",
+    "tsup": "8.5.1"
+  }
+}

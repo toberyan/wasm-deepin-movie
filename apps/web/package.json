@@ -17,6 +17,7 @@
     "@wasm-player/renderer": "workspace:*",
     "@wasm-player/subtitles": "workspace:*",
     "@wasm-player/webcodecs-adapter": "workspace:*",
+    "jassub": "2.5.23",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

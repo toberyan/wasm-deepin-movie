@@ -7,6 +7,7 @@ import {
   type DecodePath,
   type EffectiveValue,
   type MediaInfo,
+  type MediaStreamInfo,
   type PlaybackStats,
   type PlayerErrorShape,
   type PlayerPhase,
@@ -55,6 +56,11 @@ import {
 } from "@wasm-player/webcodecs-adapter";
 import { WebGL2Renderer, type FitMode } from "@wasm-player/renderer";
 import { AudioOutput } from "@wasm-player/audio";
+import JASSUB from "jassub";
+import jassubWorkerUrl from "jassub/dist/worker/worker.js?worker&url";
+import jassubWasmUrl from "jassub/dist/wasm/jassub-worker.wasm?url";
+import jassubModernWasmUrl from "jassub/dist/wasm/jassub-worker-modern.wasm?url";
+import jassubDefaultFontUrl from "jassub/dist/default.woff2?url";
 import {
   SubtitleOverlay,
   SubtitleTrack,
@@ -146,6 +152,11 @@ export class BrowserMediaEngine implements MediaEngine {
   private readonly canvas: HTMLCanvasElement;
   private readonly renderer: WebGL2Renderer;
   private readonly overlay: SubtitleOverlay;
+  private readonly overlayContainer: HTMLElement;
+  private assCanvas: HTMLCanvasElement;
+  private assRenderer: JASSUB | null = null;
+  private assTrackIndex: number | null = null;
+  private assFontData: Uint8Array | null = null;
   private readonly resizeObserver: ResizeObserver | null;
   private readonly libavBase: string | undefined;
   private readonly onLog: ((message: string, details?: unknown) => void) | undefined;
@@ -200,6 +211,8 @@ export class BrowserMediaEngine implements MediaEngine {
     this.onLog = options.onLog;
     this.renderer = new WebGL2Renderer(options.canvas);
     this.overlay = new SubtitleOverlay(options.overlayContainer);
+    this.overlayContainer = options.overlayContainer;
+    this.assCanvas = this.createAssCanvas();
     this.resizeObserver =
       typeof ResizeObserver !== "undefined"
         ? new ResizeObserver(() => this.syncCanvasSize())
@@ -450,6 +463,7 @@ export class BrowserMediaEngine implements MediaEngine {
     this.demuxEof = false;
     this.decoderFlushed = false;
     this.error = null;
+    await this.destroyAssRenderer();
     this.emit({ type: "mediaClosed" });
     this.emit({ type: "phase", phase: "idle", previous: "ready" });
   }
@@ -661,6 +675,37 @@ export class BrowserMediaEngine implements MediaEngine {
     const index = this.nextSubtitleIndex;
     this.nextSubtitleIndex += 1;
     this.subtitleTracks.set(index, track);
+    if (parsed.format === "ass" || parsed.format === "ssa") {
+      try {
+        await this.destroyAssRenderer();
+        if (!this.assFontData) {
+          const fontResponse = await fetch(jassubDefaultFontUrl);
+          if (fontResponse.ok) {
+            this.assFontData = new Uint8Array(await fontResponse.arrayBuffer());
+          }
+        }
+        const renderer = new JASSUB({
+          canvas: this.assCanvas,
+          subContent: decoded.text,
+          workerUrl: jassubWorkerUrl,
+          wasmUrl: jassubWasmUrl,
+          modernWasmUrl: jassubModernWasmUrl,
+          fonts: this.assFontData ? [this.assFontData] : [],
+          availableFonts: { "liberation sans": jassubDefaultFontUrl },
+          defaultFont: "liberation sans",
+          queryFonts: false,
+          debug: false,
+          prescaleFactor: 1
+        });
+        await renderer.ready;
+        this.assRenderer = renderer;
+        this.assTrackIndex = index;
+      } catch (error) {
+        this.warnings.push(
+          `ASS renderer unavailable: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
     const name = input.name ?? `External ${parsed.format.toUpperCase()}`;
     const language = decoded.encoding;
     const trackInfo: TrackInfo = {
@@ -676,7 +721,17 @@ export class BrowserMediaEngine implements MediaEngine {
       selected: true
     };
     if (this.media) {
-      this.media.streams = [...this.media.streams, { ...trackInfo }];
+      const streamInfo: MediaStreamInfo = {
+        index,
+        type: "subtitle",
+        codec: parsed.format,
+        codecId: 0,
+        title: name,
+        language,
+        default: false,
+        forced: false
+      };
+      this.media.streams = [...this.media.streams, streamInfo];
     }
     this.tracks = [
       ...this.tracks.map((candidate) => ({ ...candidate, selected: false })),
@@ -684,6 +739,9 @@ export class BrowserMediaEngine implements MediaEngine {
     ];
     this.selected.subtitle = index;
     this.lastSubtitleText = "";
+    if (parsed.format !== "ass" && parsed.format !== "ssa") {
+      await this.destroyAssRenderer();
+    }
     this.warnings.push(...decoded.warnings, ...parsed.warnings);
     this.emit({
       type: "trackChanged",
@@ -799,6 +857,8 @@ export class BrowserMediaEngine implements MediaEngine {
     this.disposed = true;
     this.listeners.clear();
     this.resizeObserver?.disconnect();
+    await this.destroyAssRenderer();
+    this.assCanvas.remove();
     this.renderer.destroy();
     this.overlay.destroy();
   }
@@ -1138,21 +1198,60 @@ export class BrowserMediaEngine implements MediaEngine {
 
   private updateSubtitleOverlay(mediaTimeUs: number): void {
     const index = this.selected.subtitle;
+    const visible = this.settingValue("subtitle.visible", true);
+    const delay = this.settingValue("subtitle.delayMs", 0);
     if (index === null) {
       if (this.lastSubtitleText !== "") {
         this.lastSubtitleText = "";
         this.overlay.clear();
       }
+      if (this.assRenderer) this.assCanvas.style.display = "none";
       return;
     }
+    if (index === this.assTrackIndex && this.assRenderer) {
+      if (this.lastSubtitleText !== "") {
+        this.lastSubtitleText = "";
+        this.overlay.clear();
+      }
+      if (!visible) {
+        this.assCanvas.style.display = "none";
+        return;
+      }
+      this.assCanvas.style.display = "block";
+      void this.assRenderer.manualRender({
+        expectedDisplayTime: performance.now(),
+        width: this.canvas.width,
+        height: this.canvas.height,
+        mediaTime: mediaTimeUs / 1_000_000 - delay / 1000
+      });
+      return;
+    }
+    this.assCanvas.style.display = "none";
     const track = this.subtitleTracks.get(index);
     if (!track) return;
-    const delay = this.settingValue("subtitle.delayMs", 0);
     const cues = track.getActive(mediaTimeUs, delay);
     const text = cues.map((cue) => cue.text).join("\n");
     if (text !== this.lastSubtitleText) {
       this.lastSubtitleText = text;
       this.overlay.update(cues);
+    }
+  }
+
+  private createAssCanvas(): HTMLCanvasElement {
+    const canvas = document.createElement("canvas");
+    canvas.className = "ass-subtitle-canvas";
+    this.overlayContainer.appendChild(canvas);
+    return canvas;
+  }
+
+  private async destroyAssRenderer(): Promise<void> {
+    const renderer = this.assRenderer;
+    this.assRenderer = null;
+    this.assTrackIndex = null;
+    if (renderer) {
+      await renderer.destroy().catch(() => undefined);
+      this.assCanvas.remove();
+      this.assCanvas = this.createAssCanvas();
     }
   }
 
@@ -1267,7 +1366,7 @@ export class BrowserMediaEngine implements MediaEngine {
           ? document.pictureInPictureEnabled
           : false,
       "subtitles.text": true,
-      "subtitles.ass": false,
+      "subtitles.ass": true,
       "subtitles.bitmap": false,
       "host.pick-files": true,
       "host.save-file": true,

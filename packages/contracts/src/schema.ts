@@ -4,6 +4,7 @@ export type JsonSchema = Record<string, unknown>;
 
 export interface JsonSchemaOptions {
   io?: "input" | "output";
+  target?: "draft-2020-12" | "draft-7";
 }
 
 /**
@@ -15,7 +16,7 @@ export function zodToJsonSchema(
   options: JsonSchemaOptions = {}
 ): JsonSchema {
   return z.toJSONSchema(schema, {
-    target: "draft-2020-12",
+    target: options.target ?? "draft-2020-12",
     io: options.io ?? "input"
   }) as JsonSchema;
 }

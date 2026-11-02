@@ -1394,7 +1394,271 @@
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "effective": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "effective": {},
+                "layer": {
+                  "enum": [
+                    "default",
+                    "global",
+                    "preset",
+                    "media",
+                    "session"
+                  ],
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "requested": {},
+                "status": {
+                  "enum": [
+                    "applied",
+                    "applying",
+                    "failed",
+                    "unsupported"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requested",
+                "effective",
+                "status",
+                "layer"
+              ],
+              "type": "object"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "requested": {
+            "additionalProperties": false,
+            "properties": {
+              "app": {
+                "additionalProperties": false,
+                "properties": {
+                  "panel": {
+                    "enum": [
+                      "none",
+                      "playlist",
+                      "settings"
+                    ],
+                    "type": "string"
+                  },
+                  "reduceMotion": {
+                    "type": "boolean"
+                  },
+                  "showStats": {
+                    "type": "boolean"
+                  },
+                  "theme": {
+                    "enum": [
+                      "system",
+                      "dark",
+                      "light"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "audio": {
+                "additionalProperties": false,
+                "properties": {
+                  "balance": {
+                    "maximum": 1,
+                    "minimum": -1,
+                    "type": "number"
+                  },
+                  "delayMs": {
+                    "maximum": 10000,
+                    "minimum": -10000,
+                    "type": "number"
+                  },
+                  "gainDb": {
+                    "maximum": 12,
+                    "minimum": -24,
+                    "type": "number"
+                  },
+                  "muted": {
+                    "type": "boolean"
+                  },
+                  "volume": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              },
+              "playback": {
+                "additionalProperties": false,
+                "properties": {
+                  "autoPlay": {
+                    "type": "boolean"
+                  },
+                  "loop": {
+                    "enum": [
+                      "off",
+                      "media",
+                      "playlist"
+                    ],
+                    "type": "string"
+                  },
+                  "rate": {
+                    "maximum": 4,
+                    "minimum": 0.25,
+                    "type": "number"
+                  },
+                  "volumeStep": {
+                    "maximum": 0.5,
+                    "minimum": 0.01,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              },
+              "subtitle": {
+                "additionalProperties": false,
+                "properties": {
+                  "delayMs": {
+                    "maximum": 10000,
+                    "minimum": -10000,
+                    "type": "number"
+                  },
+                  "fontSizePct": {
+                    "maximum": 250,
+                    "minimum": 50,
+                    "type": "number"
+                  },
+                  "forceStyle": {
+                    "type": "boolean"
+                  },
+                  "visible": {
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              },
+              "video": {
+                "additionalProperties": false,
+                "properties": {
+                  "brightness": {
+                    "maximum": 1,
+                    "minimum": -1,
+                    "type": "number"
+                  },
+                  "contrast": {
+                    "maximum": 2,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "crop": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bottom": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "left": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "right": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "top": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "left",
+                      "top",
+                      "right",
+                      "bottom"
+                    ],
+                    "type": "object"
+                  },
+                  "fit": {
+                    "enum": [
+                      "contain",
+                      "cover",
+                      "fill",
+                      "original"
+                    ],
+                    "type": "string"
+                  },
+                  "gamma": {
+                    "maximum": 5,
+                    "minimum": 0.1,
+                    "type": "number"
+                  },
+                  "hueDeg": {
+                    "maximum": 180,
+                    "minimum": -180,
+                    "type": "number"
+                  },
+                  "rotationDeg": {
+                    "anyOf": [
+                      {
+                        "const": 0,
+                        "type": "number"
+                      },
+                      {
+                        "const": 90,
+                        "type": "number"
+                      },
+                      {
+                        "const": 180,
+                        "type": "number"
+                      },
+                      {
+                        "const": 270,
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "saturation": {
+                    "maximum": 2,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "scaleMode": {
+                    "enum": [
+                      "nearest",
+                      "bilinear",
+                      "high-quality"
+                    ],
+                    "type": "string"
+                  },
+                  "sharpness": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "requested",
+          "effective"
+        ],
         "type": "object"
       }
     },
@@ -3561,821 +3825,34 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
-          "buffering": {
-            "type": "boolean"
-          },
-          "capabilities": {
-            "additionalProperties": {
-              "additionalProperties": false,
-              "properties": {
-                "available": {
-                  "type": "boolean"
-                },
-                "details": {
-                  "additionalProperties": {},
-                  "propertyNames": {
-                    "type": "string"
-                  },
-                  "type": "object"
-                },
-                "reason": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "available"
-              ],
-              "type": "object"
-            },
-            "propertyNames": {
-              "enum": [
-                "media.file",
-                "media.http",
-                "media.range",
-                "media.seek",
-                "media.large-file",
-                "webcodecs.video",
-                "webcodecs.audio",
-                "wasm.demux",
-                "wasm.decode.video",
-                "wasm.decode.audio",
-                "webgl2",
-                "webgpu",
-                "offscreen-canvas",
-                "audio-worklet",
-                "shared-array-buffer",
-                "file-system-access",
-                "fullscreen",
-                "picture-in-picture",
-                "subtitles.text",
-                "subtitles.ass",
-                "subtitles.bitmap",
-                "host.pick-files",
-                "host.save-file",
-                "mcp.companion",
-                "screenshot"
-              ],
-              "type": "string"
-            },
-            "required": [
-              "media.file",
-              "media.http",
-              "media.range",
-              "media.seek",
-              "media.large-file",
-              "webcodecs.video",
-              "webcodecs.audio",
-              "wasm.demux",
-              "wasm.decode.video",
-              "wasm.decode.audio",
-              "webgl2",
-              "webgpu",
-              "offscreen-canvas",
-              "audio-worklet",
-              "shared-array-buffer",
-              "file-system-access",
-              "fullscreen",
-              "picture-in-picture",
-              "subtitles.text",
-              "subtitles.ass",
-              "subtitles.bitmap",
-              "host.pick-files",
-              "host.save-file",
-              "mcp.companion",
-              "screenshot"
-            ],
-            "type": "object"
-          },
-          "durationUs": {
-            "minimum": 0,
-            "type": "number"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "code": {
-                    "enum": [
-                      "UNSUPPORTED",
-                      "NEEDS_MEDIA",
-                      "NEEDS_USER_GESTURE",
-                      "SOURCE_NOT_AUTHORIZED",
-                      "SOURCE_CHANGED",
-                      "REVISION_CONFLICT",
-                      "PERFORMANCE_LIMIT",
-                      "DECODE_FAILED",
-                      "CANCELLED",
-                      "SESSION_CLOSED",
-                      "TIMEOUT",
-                      "INVALID_REQUEST",
-                      "NOT_READY",
-                      "BUSY",
-                      "INTERNAL"
-                    ],
-                    "type": "string"
-                  },
-                  "details": {
-                    "additionalProperties": {},
-                    "propertyNames": {
-                      "type": "string"
-                    },
-                    "type": "object"
-                  },
-                  "message": {
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  "recoverable": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "code",
-                  "message",
-                  "recoverable"
-                ],
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "eventSeq": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "media": {
-            "anyOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "attachments": {
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "filename": {
-                          "type": "string"
-                        },
-                        "index": {
-                          "maximum": 9007199254740991,
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        "mimeType": {
-                          "type": "string"
-                        },
-                        "sizeBytes": {
-                          "maximum": 9007199254740991,
-                          "minimum": 0,
-                          "type": "integer"
-                        }
-                      },
-                      "required": [
-                        "index",
-                        "filename",
-                        "sizeBytes"
-                      ],
-                      "type": "object"
-                    },
-                    "type": "array"
-                  },
-                  "chapters": {
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "endUs": {
-                          "minimum": 0,
-                          "type": "number"
-                        },
-                        "index": {
-                          "maximum": 9007199254740991,
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        "startUs": {
-                          "minimum": 0,
-                          "type": "number"
-                        },
-                        "title": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "index",
-                        "startUs"
-                      ],
-                      "type": "object"
-                    },
-                    "type": "array"
-                  },
-                  "container": {
-                    "type": "string"
-                  },
-                  "decodePaths": {
-                    "additionalProperties": {
-                      "enum": [
-                        "webcodecs",
-                        "wasm",
-                        "native"
-                      ],
-                      "type": "string"
-                    },
-                    "propertyNames": {
-                      "type": "string"
-                    },
-                    "type": "object"
-                  },
-                  "durationUs": {
-                    "minimum": 0,
-                    "type": "number"
-                  },
-                  "etag": {
-                    "type": "string"
-                  },
-                  "lastModified": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  "seekable": {
-                    "type": "boolean"
-                  },
-                  "sizeBytes": {
-                    "minimum": 0,
-                    "type": "number"
-                  },
-                  "sourceId": {
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  "sourceKind": {
-                    "enum": [
-                      "file",
-                      "http",
-                      "sparse",
-                      "memory"
-                    ],
-                    "type": "string"
-                  },
-                  "streams": {
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "channelLayout": {
-                          "type": "string"
-                        },
-                        "channels": {
-                          "exclusiveMinimum": 0,
-                          "maximum": 9007199254740991,
-                          "type": "integer"
-                        },
-                        "codec": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "codecId": {
-                          "maximum": 9007199254740991,
-                          "minimum": -9007199254740991,
-                          "type": "integer"
-                        },
-                        "color": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "bitDepth": {
-                              "exclusiveMinimum": 0,
-                              "maximum": 9007199254740991,
-                              "type": "integer"
-                            },
-                            "chromaSubsampling": {
-                              "type": "string"
-                            },
-                            "inferred": {
-                              "type": "boolean"
-                            },
-                            "matrix": {
-                              "type": "string"
-                            },
-                            "pixelFormat": {
-                              "type": "string"
-                            },
-                            "primaries": {
-                              "type": "string"
-                            },
-                            "range": {
-                              "enum": [
-                                "tv",
-                                "pc",
-                                "unknown"
-                              ],
-                              "type": "string"
-                            },
-                            "transfer": {
-                              "type": "string"
-                            }
-                          },
-                          "type": "object"
-                        },
-                        "default": {
-                          "type": "boolean"
-                        },
-                        "durationUs": {
-                          "minimum": 0,
-                          "type": "number"
-                        },
-                        "forced": {
-                          "type": "boolean"
-                        },
-                        "height": {
-                          "exclusiveMinimum": 0,
-                          "maximum": 9007199254740991,
-                          "type": "integer"
-                        },
-                        "index": {
-                          "maximum": 9007199254740991,
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        "language": {
-                          "type": "string"
-                        },
-                        "level": {
-                          "maximum": 9007199254740991,
-                          "minimum": -9007199254740991,
-                          "type": "integer"
-                        },
-                        "profile": {
-                          "maximum": 9007199254740991,
-                          "minimum": -9007199254740991,
-                          "type": "integer"
-                        },
-                        "sampleRate": {
-                          "exclusiveMinimum": 0,
-                          "maximum": 9007199254740991,
-                          "type": "integer"
-                        },
-                        "timeBase": {
-                          "items": false,
-                          "maxItems": 2,
-                          "minItems": 2,
-                          "prefixItems": [
-                            {
-                              "exclusiveMinimum": 0,
-                              "maximum": 9007199254740991,
-                              "type": "integer"
-                            },
-                            {
-                              "exclusiveMinimum": 0,
-                              "maximum": 9007199254740991,
-                              "type": "integer"
-                            }
-                          ],
-                          "type": "array"
-                        },
-                        "title": {
-                          "type": "string"
-                        },
-                        "type": {
-                          "enum": [
-                            "video",
-                            "audio",
-                            "subtitle"
-                          ],
-                          "type": "string"
-                        },
-                        "width": {
-                          "exclusiveMinimum": 0,
-                          "maximum": 9007199254740991,
-                          "type": "integer"
-                        }
-                      },
-                      "required": [
-                        "index",
-                        "type",
-                        "codec",
-                        "codecId",
-                        "default",
-                        "forced"
-                      ],
-                      "type": "object"
-                    },
-                    "type": "array"
-                  },
-                  "warnings": {
-                    "items": {
-                      "type": "string"
-                    },
-                    "type": "array"
-                  }
-                },
-                "required": [
-                  "sourceId",
-                  "name",
-                  "sizeBytes",
-                  "durationUs",
-                  "seekable",
-                  "sourceKind",
-                  "streams",
-                  "chapters",
-                  "attachments",
-                  "decodePaths",
-                  "warnings"
-                ],
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "muted": {
-            "type": "boolean"
-          },
-          "phase": {
-            "enum": [
-              "idle",
-              "opening",
-              "ready",
-              "playing",
-              "paused",
-              "buffering",
-              "seeking",
-              "ended",
-              "error",
-              "disposed"
-            ],
-            "type": "string"
-          },
-          "positionUs": {
-            "type": "number"
-          },
-          "rate": {
-            "exclusiveMinimum": 0,
-            "type": "number"
-          },
-          "revision": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "selected": {
+          "session": {
             "additionalProperties": false,
             "properties": {
-              "audio": {
-                "anyOf": [
-                  {
-                    "maximum": 9007199254740991,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "subtitle": {
-                "anyOf": [
-                  {
-                    "maximum": 9007199254740991,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "video": {
-                "anyOf": [
-                  {
-                    "maximum": 9007199254740991,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "video",
-              "audio",
-              "subtitle"
-            ],
-            "type": "object"
-          },
-          "sessionId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "settings": {
-            "additionalProperties": {
-              "additionalProperties": false,
-              "properties": {
-                "effective": {},
-                "layer": {
-                  "enum": [
-                    "default",
-                    "global",
-                    "preset",
-                    "media",
-                    "session"
-                  ],
-                  "type": "string"
-                },
-                "reason": {
-                  "type": "string"
-                },
-                "requested": {},
-                "status": {
-                  "enum": [
-                    "applied",
-                    "applying",
-                    "failed",
-                    "unsupported"
-                  ],
-                  "type": "string"
-                }
-              },
-              "required": [
-                "requested",
-                "effective",
-                "status",
-                "layer"
-              ],
-              "type": "object"
-            },
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "stats": {
-            "additionalProperties": false,
-            "properties": {
-              "audioBufferMs": {
-                "minimum": 0,
+              "connectedAt": {
                 "type": "number"
               },
-              "audioUnderruns": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "decodedAudioFrames": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "decodedVideoFrames": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "droppedVideoFrames": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "lastDecodeError": {
+              "mediaName": {
                 "type": "string"
               },
-              "packetQueueBytes": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
+              "phase": {
+                "type": "string"
               },
-              "renderedFrames": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
+              "sessionId": {
+                "minLength": 1,
+                "type": "string"
               },
-              "videoQueueBytes": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "videoQueueFrames": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
+              "title": {
+                "type": "string"
               }
             },
             "required": [
-              "decodedVideoFrames",
-              "renderedFrames",
-              "droppedVideoFrames",
-              "decodedAudioFrames",
-              "audioUnderruns",
-              "videoQueueFrames",
-              "videoQueueBytes",
-              "audioBufferMs",
-              "packetQueueBytes"
+              "sessionId"
             ],
             "type": "object"
-          },
-          "tracks": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "acceleration": {
-                  "enum": [
-                    "hardware",
-                    "software",
-                    "unknown"
-                  ],
-                  "type": "string"
-                },
-                "channelLayout": {
-                  "type": "string"
-                },
-                "channels": {
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991,
-                  "type": "integer"
-                },
-                "codec": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "codecId": {
-                  "maximum": 9007199254740991,
-                  "minimum": -9007199254740991,
-                  "type": "integer"
-                },
-                "color": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "bitDepth": {
-                      "exclusiveMinimum": 0,
-                      "maximum": 9007199254740991,
-                      "type": "integer"
-                    },
-                    "chromaSubsampling": {
-                      "type": "string"
-                    },
-                    "inferred": {
-                      "type": "boolean"
-                    },
-                    "matrix": {
-                      "type": "string"
-                    },
-                    "pixelFormat": {
-                      "type": "string"
-                    },
-                    "primaries": {
-                      "type": "string"
-                    },
-                    "range": {
-                      "enum": [
-                        "tv",
-                        "pc",
-                        "unknown"
-                      ],
-                      "type": "string"
-                    },
-                    "transfer": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                },
-                "decodePath": {
-                  "enum": [
-                    "webcodecs",
-                    "wasm",
-                    "native"
-                  ],
-                  "type": "string"
-                },
-                "default": {
-                  "type": "boolean"
-                },
-                "durationUs": {
-                  "minimum": 0,
-                  "type": "number"
-                },
-                "forced": {
-                  "type": "boolean"
-                },
-                "height": {
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991,
-                  "type": "integer"
-                },
-                "id": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "index": {
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "language": {
-                  "type": "string"
-                },
-                "level": {
-                  "maximum": 9007199254740991,
-                  "minimum": -9007199254740991,
-                  "type": "integer"
-                },
-                "profile": {
-                  "maximum": 9007199254740991,
-                  "minimum": -9007199254740991,
-                  "type": "integer"
-                },
-                "sampleRate": {
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991,
-                  "type": "integer"
-                },
-                "selected": {
-                  "type": "boolean"
-                },
-                "timeBase": {
-                  "items": false,
-                  "maxItems": 2,
-                  "minItems": 2,
-                  "prefixItems": [
-                    {
-                      "exclusiveMinimum": 0,
-                      "maximum": 9007199254740991,
-                      "type": "integer"
-                    },
-                    {
-                      "exclusiveMinimum": 0,
-                      "maximum": 9007199254740991,
-                      "type": "integer"
-                    }
-                  ],
-                  "type": "array"
-                },
-                "title": {
-                  "type": "string"
-                },
-                "type": {
-                  "enum": [
-                    "video",
-                    "audio",
-                    "subtitle"
-                  ],
-                  "type": "string"
-                },
-                "width": {
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "index",
-                "type",
-                "codec",
-                "codecId",
-                "default",
-                "forced",
-                "id",
-                "selected"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "updatedAt": {
-            "minimum": 0,
-            "type": "number"
-          },
-          "volume": {
-            "maximum": 1,
-            "minimum": 0,
-            "type": "number"
           }
         },
         "required": [
-          "sessionId",
-          "phase",
-          "revision",
-          "eventSeq",
-          "media",
-          "tracks",
-          "selected",
-          "positionUs",
-          "durationUs",
-          "rate",
-          "volume",
-          "muted",
-          "buffering",
-          "settings",
-          "capabilities",
-          "error",
-          "stats",
-          "updatedAt"
+          "session"
         ],
         "type": "object"
       }
@@ -5249,6 +4726,55 @@
         },
         "required": [
           "values"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "List playable media sources in authorized directories.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "sources_list",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "sources": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sizeBytes": {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "sourceId": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sourceId",
+                "name",
+                "sizeBytes"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sources"
         ],
         "type": "object"
       }
@@ -6730,7 +6256,271 @@
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "effective": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "effective": {},
+                "layer": {
+                  "enum": [
+                    "default",
+                    "global",
+                    "preset",
+                    "media",
+                    "session"
+                  ],
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "requested": {},
+                "status": {
+                  "enum": [
+                    "applied",
+                    "applying",
+                    "failed",
+                    "unsupported"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requested",
+                "effective",
+                "status",
+                "layer"
+              ],
+              "type": "object"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "requested": {
+            "additionalProperties": false,
+            "properties": {
+              "app": {
+                "additionalProperties": false,
+                "properties": {
+                  "panel": {
+                    "enum": [
+                      "none",
+                      "playlist",
+                      "settings"
+                    ],
+                    "type": "string"
+                  },
+                  "reduceMotion": {
+                    "type": "boolean"
+                  },
+                  "showStats": {
+                    "type": "boolean"
+                  },
+                  "theme": {
+                    "enum": [
+                      "system",
+                      "dark",
+                      "light"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "audio": {
+                "additionalProperties": false,
+                "properties": {
+                  "balance": {
+                    "maximum": 1,
+                    "minimum": -1,
+                    "type": "number"
+                  },
+                  "delayMs": {
+                    "maximum": 10000,
+                    "minimum": -10000,
+                    "type": "number"
+                  },
+                  "gainDb": {
+                    "maximum": 12,
+                    "minimum": -24,
+                    "type": "number"
+                  },
+                  "muted": {
+                    "type": "boolean"
+                  },
+                  "volume": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              },
+              "playback": {
+                "additionalProperties": false,
+                "properties": {
+                  "autoPlay": {
+                    "type": "boolean"
+                  },
+                  "loop": {
+                    "enum": [
+                      "off",
+                      "media",
+                      "playlist"
+                    ],
+                    "type": "string"
+                  },
+                  "rate": {
+                    "maximum": 4,
+                    "minimum": 0.25,
+                    "type": "number"
+                  },
+                  "volumeStep": {
+                    "maximum": 0.5,
+                    "minimum": 0.01,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              },
+              "subtitle": {
+                "additionalProperties": false,
+                "properties": {
+                  "delayMs": {
+                    "maximum": 10000,
+                    "minimum": -10000,
+                    "type": "number"
+                  },
+                  "fontSizePct": {
+                    "maximum": 250,
+                    "minimum": 50,
+                    "type": "number"
+                  },
+                  "forceStyle": {
+                    "type": "boolean"
+                  },
+                  "visible": {
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              },
+              "video": {
+                "additionalProperties": false,
+                "properties": {
+                  "brightness": {
+                    "maximum": 1,
+                    "minimum": -1,
+                    "type": "number"
+                  },
+                  "contrast": {
+                    "maximum": 2,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "crop": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bottom": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "left": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "right": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "top": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "left",
+                      "top",
+                      "right",
+                      "bottom"
+                    ],
+                    "type": "object"
+                  },
+                  "fit": {
+                    "enum": [
+                      "contain",
+                      "cover",
+                      "fill",
+                      "original"
+                    ],
+                    "type": "string"
+                  },
+                  "gamma": {
+                    "maximum": 5,
+                    "minimum": 0.1,
+                    "type": "number"
+                  },
+                  "hueDeg": {
+                    "maximum": 180,
+                    "minimum": -180,
+                    "type": "number"
+                  },
+                  "rotationDeg": {
+                    "anyOf": [
+                      {
+                        "const": 0,
+                        "type": "number"
+                      },
+                      {
+                        "const": 90,
+                        "type": "number"
+                      },
+                      {
+                        "const": 180,
+                        "type": "number"
+                      },
+                      {
+                        "const": 270,
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "saturation": {
+                    "maximum": 2,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "scaleMode": {
+                    "enum": [
+                      "nearest",
+                      "bilinear",
+                      "high-quality"
+                    ],
+                    "type": "string"
+                  },
+                  "sharpness": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "requested",
+          "effective"
+        ],
         "type": "object"
       }
     }
