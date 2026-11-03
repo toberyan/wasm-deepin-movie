@@ -94,6 +94,29 @@ describe("PlayerController", () => {
     expect(pair.controller.getState().positionUs).toBeGreaterThan(30_000_000);
   });
 
+  it("advances the playlist when playback.loop is playlist", async () => {
+    const pair = createController();
+    const first = sampleFile("first.mp4");
+    const second = sampleFile("second.mp4");
+    await pair.invoke(ACTION_IDS.playlistAdd, {
+      sources: [
+        { kind: "file", file: first, name: "first.mp4" },
+        { kind: "file", file: second, name: "second.mp4" }
+      ]
+    });
+    const loopResult = await pair.invoke(ACTION_IDS.loopSet, { mode: "playlist" });
+    expect(loopResult.status).toBe("applied");
+    expect((await pair.invoke(ACTION_IDS.playlistPlay, { index: 0 })).status).toBe("applied");
+    expect(pair.controller.getState().media?.name).toBe("first.mp4");
+    expect(pair.controller.getState().settings["playback.loop"]?.effective).toBe("playlist");
+    const seekResult = await pair.invoke(ACTION_IDS.playbackSeek, { positionUs: 120_000_000 });
+    expect(seekResult.status).toBe("applied");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const state = pair.controller.getState();
+    expect(state.media?.name).toBe("second.mp4");
+    expect(state.phase).toBe("playing");
+  });
+
   it("rejects stale expectedRevision without changing state", async () => {
     const pair = createController();
     await open(pair.controller, pair.invoke);

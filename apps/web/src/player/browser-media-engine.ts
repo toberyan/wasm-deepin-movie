@@ -56,7 +56,13 @@ import {
   type VideoDecoderWorkerClient,
   type VideoFrameEvent
 } from "@wasm-player/webcodecs-adapter";
-import { WebGL2Renderer, type FitMode } from "@wasm-player/renderer";
+import {
+  WebGL2Renderer,
+  type CropRect,
+  type FitMode,
+  type RotationDeg,
+  type ScaleMode
+} from "@wasm-player/renderer";
 import { AudioOutput } from "@wasm-player/audio";
 import JASSUB from "jassub";
 import jassubWorkerUrl from "jassub/dist/worker/worker.js?worker&url";
@@ -82,6 +88,7 @@ export interface BrowserMediaEngineOptions {
   overlayContainer: HTMLElement;
   libavBase?: string;
   libavVariant?: string;
+  libavThreads?: "st" | "mt";
   onLog?: (message: string, details?: unknown) => void;
 }
 
@@ -109,6 +116,29 @@ function mediaSourceName(source: EngineMediaSource): string {
     }
   }
   return source.sourceId;
+}
+
+const LEGACY_CONTAINER_EXTENSIONS = new Set([
+  "avi",
+  "flv",
+  "ts",
+  "m2ts",
+  "mts",
+  "mpg",
+  "mpeg",
+  "vob",
+  "wmv",
+  "asf",
+  "rm",
+  "rmvb",
+  "ogm",
+  "mp3",
+  "aac"
+]);
+
+function isLegacyContainer(name: string): boolean {
+  const extension = name.split(".").pop()?.toLowerCase();
+  return extension !== undefined && LEGACY_CONTAINER_EXTENSIONS.has(extension);
 }
 
 function toWorkerSource(source: EngineMediaSource): {
@@ -163,6 +193,10 @@ export class BrowserMediaEngine implements MediaEngine {
   private readonly resizeObserver: ResizeObserver | null;
   private readonly libavBase: string | undefined;
   private readonly libavVariant: string | undefined;
+  private readonly libavThreads: "st" | "mt";
+  private lastOpenRequest: OpenMediaRequest | null = null;
+  private customVariantAvailable: boolean | null = null;
+  private libavVariantUsed: string | undefined;
   private readonly onLog: ((message: string, details?: unknown) => void) | undefined;
 
   private phase: PlayerPhase = "idle";
@@ -216,6 +250,7 @@ export class BrowserMediaEngine implements MediaEngine {
     this.canvas = options.canvas;
     this.libavBase = options.libavBase;
     this.libavVariant = options.libavVariant;
+    this.libavThreads = options.libavThreads ?? "st";
     this.onLog = options.onLog;
     this.renderer = new WebGL2Renderer(options.canvas);
     this.overlay = new SubtitleOverlay(options.overlayContainer);
@@ -248,26 +283,48 @@ export class BrowserMediaEngine implements MediaEngine {
     this.emit({ type: "phase", phase: "opening", previous: "idle" });
 
     const workerSource = toWorkerSource(request.source);
-    const worker = new Worker(new URL("../workers/demux.worker.ts", import.meta.url), {
-      type: "module",
-      name: "demux"
-    });
-    const demux = new DemuxWorkerClient(worker);
-    this.demux = demux;
+    this.lastOpenRequest = request;
+    const name = mediaSourceName(request.source);
+    const preferCustom =
+      this.libavVariant !== undefined ||
+      (isLegacyContainer(name) && (await this.hasCustomVariant()));
+    let variant = preferCustom ? this.libavVariant ?? "wasm-player-p0" : undefined;
     let probe: ProbeResult;
+    let demux = this.createDemuxClient();
+    this.demux = demux;
     try {
-      probe = await demux.open(
-        workerSource as Parameters<DemuxWorkerClient["open"]>[0],
-        {
-          name: mediaSourceName(request.source),
+      probe = await demux.open(workerSource as Parameters<DemuxWorkerClient["open"]>[0], {
+        name,
+        ...(this.libavBase ? { libavBase: this.libavBase } : {}),
+        ...(variant ? { libavVariant: variant } : {}),
+        libavThreads: this.libavThreads
+      });
+    } catch (firstError) {
+      const canFallback =
+        variant === undefined &&
+        this.libavVariant === undefined &&
+        (await this.hasCustomVariant());
+      if (!canFallback) {
+        await this.close();
+        throw firstError;
+      }
+      await demux.close().catch(() => demux.terminate());
+      demux = this.createDemuxClient();
+      this.demux = demux;
+      variant = "wasm-player-p0";
+      try {
+        probe = await demux.open(workerSource as Parameters<DemuxWorkerClient["open"]>[0], {
+          name,
           ...(this.libavBase ? { libavBase: this.libavBase } : {}),
-          ...(this.libavVariant ? { libavVariant: this.libavVariant } : {})
-        }
-      );
-    } catch (error) {
-      await this.close();
-      throw error;
+          libavVariant: variant,
+          libavThreads: this.libavThreads
+        });
+      } catch (secondError) {
+        await this.close();
+        throw secondError;
+      }
     }
+    this.libavVariantUsed = variant;
     this.probe = probe;
     try {
       this.media = structuredClone(probe.media);
@@ -298,9 +355,19 @@ export class BrowserMediaEngine implements MediaEngine {
       const routed = routeTracks(probe.media.streams, support, {
         force: request.forceDecodePath
       });
-      const videoTrack = probe.tracks.find((track) => track.type === "video" && track.default) ??
+      const preferredVideo = request.preferredTracks?.video;
+      const preferredAudio = request.preferredTracks?.audio;
+      const videoTrack =
+        (preferredVideo !== undefined
+          ? probe.tracks.find((track) => track.type === "video" && track.index === preferredVideo)
+          : undefined) ??
+        probe.tracks.find((track) => track.type === "video" && track.default) ??
         probe.tracks.find((track) => track.type === "video") ?? null;
-      const audioTrack = probe.tracks.find((track) => track.type === "audio" && track.default) ??
+      const audioTrack =
+        (preferredAudio !== undefined
+          ? probe.tracks.find((track) => track.type === "audio" && track.index === preferredAudio)
+          : undefined) ??
+        probe.tracks.find((track) => track.type === "audio" && track.default) ??
         probe.tracks.find((track) => track.type === "audio") ?? null;
 
       let videoWasm = false;
@@ -380,7 +447,7 @@ export class BrowserMediaEngine implements MediaEngine {
         }
         this.videoDecoder = createVideoDecoderWorker();
         this.videoDecoder.setFrameHandler((event) => this.onVideoFrame(event));
-        this.videoDecoder.setErrorHandler((error) => this.onDecodeError(error, this.epoch));
+        this.videoDecoder.setErrorHandler((error) => this.onDecodeError(error, this.epoch, "video"));
         const configured = await this.videoDecoder.configure(config, epoch);
         if (!configured.supported) {
           throw new PlayerError("UNSUPPORTED", configured.reason ?? "video decoder rejected the config");
@@ -392,7 +459,7 @@ export class BrowserMediaEngine implements MediaEngine {
         if (!audioWasm && config && config.type === "audio") {
           this.audioDecoder = createAudioDecoderWorker();
           this.audioDecoder.setPcmHandler((event) => this.onAudioPcm(event));
-          this.audioDecoder.setErrorHandler((error) => this.onDecodeError(error, this.epoch));
+          this.audioDecoder.setErrorHandler((error) => this.onDecodeError(error, this.epoch, "audio"));
           const configured = await this.audioDecoder.configure(config, epoch);
           if (!configured.supported) {
             this.warnings.push(
@@ -419,6 +486,8 @@ export class BrowserMediaEngine implements MediaEngine {
           try {
             await audioOutput.start();
             audioOutput.setVolume(this.volume, this.muted);
+            audioOutput.setGainDb(this.settingValue("audio.gainDb", 0));
+            audioOutput.setBalance(this.settingValue("audio.balance", 0));
             audioOutput.setRate(this.rate);
             this.audioOutput = audioOutput;
           } catch (error) {
@@ -498,6 +567,8 @@ export class BrowserMediaEngine implements MediaEngine {
     this.audioTrack = null;
     this.videoWasm = false;
     this.audioWasm = false;
+    this.lastOpenRequest = null;
+    this.libavVariantUsed = undefined;
     this.positionUs = 0;
     this.durationUs = 0;
     this.decodingStatsReset();
@@ -688,12 +759,27 @@ export class BrowserMediaEngine implements MediaEngine {
       return this.tracks;
     }
     const current = type === "video" ? this.selected.video : this.selected.audio;
-    if (current !== index) {
-      throw new PlayerError(
-        "UNSUPPORTED",
-        "P0 supports a single video and audio track; switching requires a pipeline rebuild"
-      );
+    if (current === index) return this.tracks;
+    if (!this.tracks.some((track) => track.type === type && track.index === index)) {
+      throw new PlayerError("UNSUPPORTED", `${type} track ${index} does not exist`);
     }
+    const request = this.lastOpenRequest;
+    if (!request) throw new PlayerError("INVALID_REQUEST", "no media is open");
+    const wasPlaying = this.phase === "playing";
+    const positionUs = this.currentMediaTime(nowSeconds());
+    const preferredTracks: Partial<Record<"video" | "audio" | "subtitle", number>> = {
+      ...request.preferredTracks
+    };
+    if (this.selected.video !== null) preferredTracks.video = this.selected.video;
+    if (this.selected.audio !== null) preferredTracks.audio = this.selected.audio;
+    preferredTracks[type] = index;
+    await this.open({
+      ...request,
+      autoPlay: wasPlaying,
+      startPositionUs: positionUs,
+      preferredTracks
+    });
+    if (!wasPlaying) await this.pause();
     return this.tracks;
   }
 
@@ -930,32 +1016,23 @@ export class BrowserMediaEngine implements MediaEngine {
       case "video.contrast":
       case "video.saturation":
       case "video.gamma":
+      case "video.hueDeg":
+      case "video.rotationDeg":
+      case "video.crop":
+      case "video.sharpness":
       case "video.fit":
         return applied();
       case "video.scaleMode":
-        if (requested === "nearest") {
-          return unsupported("nearest-neighbour scaling is not implemented in WebGL2 P0");
-        }
         return {
           requested,
           effective: requested,
           status: "applied",
           layer: scope,
-          reason: "WebGL2 linear filtering"
+          reason:
+            requested === "high-quality"
+              ? "WebGL2 linear filtering with shader sharpening available"
+              : "WebGL2 filtering"
         };
-      case "video.rotationDeg":
-        if (requested === 0) return applied();
-        return unsupported("geometric transforms are P2");
-      case "video.crop": {
-        const crop = requested as { left: number; top: number; right: number; bottom: number };
-        if (crop.left === 0 && crop.top === 0 && crop.right === 0 && crop.bottom === 0) {
-          return applied();
-        }
-        return unsupported("crop is P2");
-      }
-      case "video.sharpness":
-        if (requested === 0) return applied();
-        return unsupported("sharpening is P2");
       case "audio.volume": {
         this.volume = requested as number;
         this.audioOutput?.setVolume(this.volume, this.muted);
@@ -992,10 +1069,16 @@ export class BrowserMediaEngine implements MediaEngine {
       case "app.showStats":
       case "app.panel":
         return applied();
-      case "audio.gainDb":
-      case "audio.balance":
+      case "audio.gainDb": {
+        this.audioOutput?.setGainDb(requested as number);
+        return applied();
+      }
+      case "audio.balance": {
+        this.audioOutput?.setBalance(requested as number);
+        return applied();
+      }
       case "audio.delayMs":
-        return unsupported("advanced audio processing is P2");
+        return unsupported("audio delay is P2");
       default:
         return unsupported("not implemented by the browser engine");
     }
@@ -1007,6 +1090,16 @@ export class BrowserMediaEngine implements MediaEngine {
       contrast: this.settingValue("video.contrast", 1),
       saturation: this.settingValue("video.saturation", 1),
       gamma: this.settingValue("video.gamma", 1),
+      hueDeg: this.settingValue("video.hueDeg", 0),
+      rotationDeg: this.settingValue<RotationDeg>("video.rotationDeg", 0),
+      crop: this.settingValue<CropRect>("video.crop", {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0
+      }),
+      sharpness: this.settingValue("video.sharpness", 0),
+      scaleMode: this.settingValue<ScaleMode>("video.scaleMode", "high-quality"),
       fit: this.settingValue<FitMode>("video.fit", "contain")
     });
   }
@@ -1191,9 +1284,14 @@ export class BrowserMediaEngine implements MediaEngine {
     }
   }
 
-  private onDecodeError(error: PlayerError, epoch: number): void {
+  private onDecodeError(error: PlayerError, epoch: number, track: "video" | "audio"): void {
     if (epoch !== this.epoch || this.closed) return;
-    this.onEngineError(error);
+    this.onEngineError(
+      new PlayerError(error.code, error.message, {
+        recoverable: error.recoverable,
+        details: { ...(error.details ?? {}), track }
+      })
+    );
   }
 
   private onEngineError(error: unknown): void {
@@ -1228,13 +1326,6 @@ export class BrowserMediaEngine implements MediaEngine {
       if (due) this.previewFramePending = false;
     }
     if (due) {
-      this.renderer.setSettings({
-        brightness: this.settingValue("video.brightness", 0),
-        contrast: this.settingValue("video.contrast", 1),
-        saturation: this.settingValue("video.saturation", 1),
-        gamma: this.settingValue("video.gamma", 1),
-        fit: this.settingValue<FitMode>("video.fit", "contain")
-      });
       this.renderer.render(due.frame);
       due.frame.close();
       this.stats.renderedFrames += 1;
@@ -1464,6 +1555,29 @@ export class BrowserMediaEngine implements MediaEngine {
       screenshot: hasScreenshot
     });
     return caps;
+  }
+
+  private createDemuxClient(): DemuxWorkerClient {
+    const worker = new Worker(new URL("../workers/demux.worker.ts", import.meta.url), {
+      type: "module",
+      name: "demux"
+    });
+    return new DemuxWorkerClient(worker);
+  }
+
+  private async hasCustomVariant(): Promise<boolean> {
+    if (this.customVariantAvailable !== null) return this.customVariantAvailable;
+    try {
+      const base = new URL(this.libavBase ?? "/libav/", window.location.href).href;
+      const response = await fetch(new URL("libav-wasm-player-p0.mjs", base), {
+        method: "HEAD",
+        cache: "no-store"
+      });
+      this.customVariantAvailable = response.ok;
+    } catch {
+      this.customVariantAvailable = false;
+    }
+    return this.customVariantAvailable;
   }
 
   private syncCanvasSize(): void {

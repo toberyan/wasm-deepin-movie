@@ -101,7 +101,12 @@ export type DemuxRequest =
       type: "open";
       requestId: number;
       source: WorkerSource;
-      options?: { name?: string; libavBase?: string; libavVariant?: string };
+      options?: {
+        name?: string;
+        libavBase?: string;
+        libavVariant?: string;
+        libavThreads?: "st" | "mt";
+      };
     }
   | {
       type: "read";

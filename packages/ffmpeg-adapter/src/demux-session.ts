@@ -30,6 +30,7 @@ type LibAVInstance = LibAVJS.LibAV;
 export interface DemuxSessionOptions {
   libavBase?: string;
   libavVariant?: string;
+  libavThreads?: "st" | "mt";
   fetch?: typeof fetch;
   /**
    * libav.js 6.8.8 direct mode installs its own global onmessage handler even
@@ -40,6 +41,7 @@ export interface DemuxSessionOptions {
 
 export interface DemuxOpenOptions {
   name?: string;
+  libavThreads?: "st" | "mt";
 }
 
 const AVSEEK_FLAGS = { backward: 1 } as const;
@@ -193,6 +195,7 @@ export class DemuxSession {
   private readonly options: DemuxSessionOptions;
   private libavBase: string | undefined;
   private libavVariant: string | undefined;
+  private libavThreads: "st" | "mt" = "st";
   private libavWrapper: LibAVWrapper = LibAV;
   private libav: LibAVInstance | null = null;
   private source: SourceReader | null = null;
@@ -223,10 +226,16 @@ export class DemuxSession {
     this.libavVariant = variant;
   }
 
+  setLibavThreads(threads: "st" | "mt" | undefined): void {
+    if (this.libav) throw new PlayerError("BUSY", "cannot change libav threads while open");
+    this.libavThreads = threads ?? "st";
+  }
+
   async open(source: WorkerSource, options: DemuxOpenOptions = {}): Promise<ProbeResult> {
     if (this.libav) throw new PlayerError("BUSY", "demux session is already open");
     this.closed = false;
     this.lastSourceError = null;
+    if (options.libavThreads !== undefined) this.libavThreads = options.libavThreads;
     const reader = await this.createSource(source);
     this.source = reader;
     const size = reader.getSize();
@@ -240,13 +249,22 @@ export class DemuxSession {
       warnings.push("source is forward-only; seeking is unavailable");
     }
     try {
-      const libavOptions: { noworker: boolean; base?: string } = { noworker: true };
+      const libavOptions: { noworker: boolean; base?: string; yesthreads?: boolean } = {
+        noworker: true
+      };
       if (this.libavBase) libavOptions.base = this.libavBase;
+      if (this.libavThreads === "mt") libavOptions.yesthreads = true;
       const wrapper = await loadLibAV({
         base: this.libavBase,
         variant: this.libavVariant
       });
       this.libavWrapper = wrapper;
+      if (this.libavThreads === "mt") {
+        const target = (
+          wrapper as unknown as { target?: (options: { yesthreads: boolean }) => string }
+        ).target?.({ yesthreads: true });
+        warnings.push(`libav thread target: ${target ?? "unknown"}`);
+      }
       const libav = await wrapper.LibAV(libavOptions);
       this.options.onLibavReady?.();
       this.libav = libav;
@@ -270,7 +288,10 @@ export class DemuxSession {
       throw new PlayerError("DECODE_FAILED", "failed to probe media", {
         recoverable: true,
         cause: error,
-        details: { source: sourceName(source, "media") }
+        details: {
+          source: sourceName(source, "media"),
+          reason: error instanceof Error ? error.message : String(error)
+        }
       });
     }
   }
@@ -300,6 +321,7 @@ export class DemuxSession {
         cause: error
       });
     }
+    if (this.lastSourceError) throw sourceErrorToPlayerError(this.lastSourceError);
     const [ret, packetsByStream] = result;
     const ordered: {
       stream: LibAVJS.Stream;
@@ -330,7 +352,7 @@ export class DemuxSession {
       if (decoder) {
         await this.decodeWasmPacket(decoder, entry.raw, entry.converted, wasmVideoFrames, wasmAudioChunks);
       } else {
-        packets.push(entry.converted);
+        packets.push(this.prepareWebCodecsPacket(entry.stream, entry.converted));
       }
     }
     const eof = ret === libav.AVERROR_EOF && packets.length === 0;
@@ -385,6 +407,7 @@ export class DemuxSession {
       throw new PlayerError("UNSUPPORTED", "source does not support seeking");
     }
     this.pending = [];
+    this.lastSourceError = null;
     await this.flushWasmDecoderState();
     this.wasmFlushed = false;
     const target = this.streams.find((stream) => stream.codec_type === STREAM_TYPE_VIDEO) ??
@@ -508,6 +531,12 @@ export class DemuxSession {
           error instanceof SourceError
             ? error
             : new SourceError("READ_FAILED", error instanceof Error ? error.message : String(error));
+        const libav = this.libav;
+        if (libav) {
+          // Release FFmpeg's pending AVIO read; the next read() surfaces the
+          // typed source error instead of leaving the worker blocked forever.
+          void libav.ff_block_reader_dev_send(name, position, new Uint8Array(0)).catch(() => undefined);
+        }
       });
   }
 
@@ -676,20 +705,23 @@ export class DemuxSession {
         continue;
       }
       if (type === "subtitle") {
-        const subtitleTrack: ProbeResult["tracks"][number] = {
+        const subtitleInfo: ProbeResult["media"]["streams"][number] = {
           index: stream.index,
           type: "subtitle",
           codec,
           codecId: codecpar.codec_id,
           default: false,
           forced: false,
+          timeBase: [stream.time_base_num, stream.time_base_den]
+        };
+        if (stream.metadata?.language !== undefined) subtitleInfo.language = stream.metadata.language;
+        if (stream.metadata?.title !== undefined) subtitleInfo.title = stream.metadata.title;
+        streams.push(subtitleInfo);
+        tracks.push({
+          ...subtitleInfo,
           id: `subtitle:${stream.index}`,
           selected: false
-        };
-        if (stream.metadata?.language !== undefined) subtitleTrack.language = stream.metadata.language;
-        if (stream.metadata?.title !== undefined) subtitleTrack.title = stream.metadata.title;
-        streams.push(subtitleTrack);
-        tracks.push(subtitleTrack);
+        });
         continue;
       }
 
@@ -756,8 +788,15 @@ export class DemuxSession {
               codedWidth: candidate.codedWidth,
               codedHeight: candidate.codedHeight
             };
-            const description = configDescription(candidate.description);
-            if (description) videoConfig.description = description;
+            let description = configDescription(candidate.description);
+            if (!description && codecpar.extradata) {
+              description = codecpar.extradata.buffer.slice(
+                codecpar.extradata.byteOffset,
+                codecpar.extradata.byteOffset + codecpar.extradata.byteLength
+              ) as ArrayBuffer;
+            }
+            const normalized = normalizeVideoDescription(candidate.codec, description);
+            if (normalized) videoConfig.description = normalized;
             config = videoConfig;
           }
         } else {
@@ -875,6 +914,30 @@ export class DemuxSession {
     }
   }
 
+  private prepareWebCodecsPacket(
+    stream: LibAVJS.Stream,
+    packet: DemuxPacket
+  ): DemuxPacket {
+    // Matroska stores H.264 as Annex B, while an avcC/avc1 WebCodecs config
+    // expects 4-byte length-prefixed NAL units. MP4 packets are already in
+    // that form and do not start with a start code.
+    if (stream.codec_id !== 27) return packet;
+    const bytes = new Uint8Array(packet.data);
+    if (bytes.length < 4 || bytes[0] !== 0 || bytes[1] !== 0) return packet;
+    const startsWithStartCode =
+      bytes[2] === 1 || (bytes[2] === 0 && bytes[3] === 1);
+    if (!startsWithStartCode) return packet;
+    const converted = annexBToAvccSample(bytes);
+    if (!converted) return packet;
+    return {
+      ...packet,
+      data: converted.buffer.slice(
+        converted.byteOffset,
+        converted.byteOffset + converted.byteLength
+      ) as ArrayBuffer
+    };
+  }
+
   private convertPacket(
     stream: LibAVJS.Stream,
     packet: LibAVJS.Packet
@@ -906,6 +969,128 @@ export class DemuxSession {
     }
     return this.libav;
   }
+}
+
+function normalizeVideoDescription(
+  codec: string,
+  description: ArrayBuffer | undefined
+): ArrayBuffer | undefined {
+  if (!description) return undefined;
+  if (!codec.startsWith("avc1") && !codec.startsWith("avc3")) return description;
+  const bytes = new Uint8Array(description);
+  if (bytes.length === 0 || bytes[0] === 1) return description;
+  const avcC = annexBToAvcC(bytes);
+  return avcC
+    ? (avcC.buffer.slice(avcC.byteOffset, avcC.byteOffset + avcC.byteLength) as ArrayBuffer)
+    : description;
+}
+
+function annexBToAvcC(data: Uint8Array): Uint8Array | null {
+  const nalUnits: Uint8Array[] = [];
+  let index = 0;
+  while (index + 3 < data.length) {
+    let start = -1;
+    let prefix = 0;
+    for (let cursor = index; cursor + 2 < data.length; cursor += 1) {
+      if (data[cursor] !== 0 || data[cursor + 1] !== 0) continue;
+      if (data[cursor + 2] === 1) {
+        start = cursor + 3;
+        prefix = 3;
+        break;
+      }
+      if (cursor + 3 < data.length && data[cursor + 2] === 0 && data[cursor + 3] === 1) {
+        start = cursor + 4;
+        prefix = 4;
+        break;
+      }
+    }
+    if (start < 0) break;
+    let end = data.length;
+    for (let cursor = start; cursor + 2 < data.length; cursor += 1) {
+      if (
+        data[cursor] === 0 &&
+        data[cursor + 1] === 0 &&
+        (data[cursor + 2] === 1 ||
+          (cursor + 3 < data.length && data[cursor + 2] === 0 && data[cursor + 3] === 1))
+      ) {
+        end = cursor;
+        break;
+      }
+    }
+    if (end > start) nalUnits.push(data.subarray(start, end));
+    index = end > start ? end : start + prefix;
+  }
+  const sps = nalUnits.find((nal) => ((nal[0] ?? 0) & 0x1f) === 7);
+  const pps = nalUnits.find((nal) => ((nal[0] ?? 0) & 0x1f) === 8);
+  if (!sps || sps.length < 4 || !pps || pps.length === 0) return null;
+  const output = new Uint8Array(11 + sps.length + pps.length);
+  output[0] = 1;
+  output[1] = sps[1] ?? 0;
+  output[2] = sps[2] ?? 0;
+  output[3] = sps[3] ?? 0;
+  output[4] = 0xff;
+  output[5] = 0xe1;
+  output[6] = (sps.length >> 8) & 0xff;
+  output[7] = sps.length & 0xff;
+  output.set(sps, 8);
+  let offset = 8 + sps.length;
+  output[offset] = 1;
+  offset += 1;
+  output[offset] = (pps.length >> 8) & 0xff;
+  output[offset + 1] = pps.length & 0xff;
+  offset += 2;
+  output.set(pps, offset);
+  return output;
+}
+
+function annexBToAvccSample(data: Uint8Array): Uint8Array | null {
+  const nalUnits: Uint8Array[] = [];
+  let index = 0;
+  while (index + 3 < data.length) {
+    let start = -1;
+    let prefix = 0;
+    for (let cursor = index; cursor + 2 < data.length; cursor += 1) {
+      if (data[cursor] !== 0 || data[cursor + 1] !== 0) continue;
+      if (data[cursor + 2] === 1) {
+        start = cursor + 3;
+        prefix = 3;
+        break;
+      }
+      if (cursor + 3 < data.length && data[cursor + 2] === 0 && data[cursor + 3] === 1) {
+        start = cursor + 4;
+        prefix = 4;
+        break;
+      }
+    }
+    if (start < 0) break;
+    let end = data.length;
+    for (let cursor = start; cursor + 2 < data.length; cursor += 1) {
+      if (
+        data[cursor] === 0 &&
+        data[cursor + 1] === 0 &&
+        (data[cursor + 2] === 1 ||
+          (cursor + 3 < data.length && data[cursor + 2] === 0 && data[cursor + 3] === 1))
+      ) {
+        end = cursor;
+        break;
+      }
+    }
+    if (end > start) nalUnits.push(data.subarray(start, end));
+    index = end > start ? end : start + prefix;
+  }
+  if (nalUnits.length === 0) return null;
+  const size = nalUnits.reduce((sum, nal) => sum + 4 + nal.length, 0);
+  const output = new Uint8Array(size);
+  let offset = 0;
+  for (const nal of nalUnits) {
+    output[offset] = (nal.length >>> 24) & 0xff;
+    output[offset + 1] = (nal.length >>> 16) & 0xff;
+    output[offset + 2] = (nal.length >>> 8) & 0xff;
+    output[offset + 3] = nal.length & 0xff;
+    output.set(nal, offset + 4);
+    offset += 4 + nal.length;
+  }
+  return output;
 }
 
 function configDescription(

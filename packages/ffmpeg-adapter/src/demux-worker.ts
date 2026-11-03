@@ -79,6 +79,7 @@ async function handle(request: DemuxRequest): Promise<void> {
       case "open": {
         if (request.options?.libavBase) session.setLibavBase(request.options.libavBase);
         if (request.options?.libavVariant) session.setLibavVariant(request.options.libavVariant);
+        if (request.options?.libavThreads) session.setLibavThreads(request.options.libavThreads);
         const value = await session.open(request.source, request.options);
         scope.postMessage({ type: "result", requestId: request.requestId, ok: true, value });
         return;

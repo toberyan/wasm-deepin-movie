@@ -1,10 +1,24 @@
 export type FitMode = "contain" | "cover" | "fill" | "original";
+export type ScaleMode = "nearest" | "bilinear" | "high-quality";
+export type RotationDeg = 0 | 90 | 180 | 270;
+
+export interface CropRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
 
 export interface RenderSettings {
   brightness: number;
   contrast: number;
   saturation: number;
   gamma: number;
+  hueDeg: number;
+  rotationDeg: RotationDeg;
+  crop: CropRect;
+  sharpness: number;
+  scaleMode: ScaleMode;
   fit: FitMode;
 }
 
@@ -13,6 +27,11 @@ export const DEFAULT_RENDER_SETTINGS: RenderSettings = {
   contrast: 1,
   saturation: 1,
   gamma: 1,
+  hueDeg: 0,
+  rotationDeg: 0,
+  crop: { left: 0, top: 0, right: 0, bottom: 0 },
+  sharpness: 0,
+  scaleMode: "high-quality",
   fit: "contain"
 };
 
@@ -33,15 +52,58 @@ uniform float uBrightness;
 uniform float uContrast;
 uniform float uSaturation;
 uniform float uGamma;
+uniform float uHue;
+uniform vec4 uCrop;
+uniform int uRotation;
+uniform float uSharpness;
+uniform vec2 uTexel;
 out vec4 outColor;
 
+vec3 hueShift(vec3 color, float angle) {
+  float s = sin(angle);
+  float c = cos(angle);
+  mat3 m = mat3(
+    0.213 + c * 0.787 - s * 0.213,
+    0.213 - c * 0.213 + s * 0.143,
+    0.213 - c * 0.213 - s * 0.787,
+    0.715 - c * 0.715 - s * 0.715,
+    0.715 + c * 0.285 + s * 0.140,
+    0.715 - c * 0.715 + s * 0.715,
+    0.072 - c * 0.072 + s * 0.928,
+    0.072 - c * 0.072 - s * 0.283,
+    0.072 + c * 0.928 + s * 0.072
+  );
+  return m * color;
+}
+
 void main() {
-  vec4 tex = texture(uTexture, vUv);
+  vec2 uv = vec2(
+    uCrop.x + vUv.x * (1.0 - uCrop.x - uCrop.z),
+    uCrop.y + vUv.y * (1.0 - uCrop.y - uCrop.w)
+  );
+  if (uRotation == 90) {
+    uv = vec2(uv.y, 1.0 - uv.x);
+  } else if (uRotation == 180) {
+    uv = 1.0 - uv;
+  } else if (uRotation == 270) {
+    uv = vec2(1.0 - uv.y, uv.x);
+  }
+  vec4 tex = texture(uTexture, uv);
   vec3 color = tex.rgb;
+  if (uSharpness > 0.0) {
+    vec3 blur = (
+      texture(uTexture, uv + vec2(uTexel.x, 0.0)).rgb +
+      texture(uTexture, uv - vec2(uTexel.x, 0.0)).rgb +
+      texture(uTexture, uv + vec2(0.0, uTexel.y)).rgb +
+      texture(uTexture, uv - vec2(0.0, uTexel.y)).rgb
+    ) * 0.25;
+    color += (color - blur) * uSharpness * 2.0;
+  }
   color = (color - 0.5) * uContrast + 0.5;
   color += uBrightness;
   float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
   color = mix(vec3(luma), color, uSaturation);
+  color = hueShift(color, radians(uHue));
   color = pow(max(color, vec3(0.0)), vec3(1.0 / max(uGamma, 0.0001)));
   outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }`;
@@ -152,18 +214,42 @@ export class WebGL2Renderer {
     } else {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, frame);
     }
+    const crop = this.settings.crop;
+    const visibleWidth = width * (1 - crop.left - crop.right);
+    const visibleHeight = height * (1 - crop.top - crop.bottom);
+    const swapped = this.settings.rotationDeg === 90 || this.settings.rotationDeg === 270;
+    const fitWidth = swapped ? visibleHeight : visibleWidth;
+    const fitHeight = swapped ? visibleWidth : visibleHeight;
     const [scaleX, scaleY] = fitScale(
       this.settings.fit,
       this.canvas.width,
       this.canvas.height,
-      width,
-      height
+      fitWidth,
+      fitHeight
     );
+    const filter = this.settings.scaleMode === "nearest" ? gl.NEAREST : gl.LINEAR;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
     gl.uniform2f(this.uniforms.uScale ?? null, scaleX, scaleY);
     gl.uniform1f(this.uniforms.uBrightness ?? null, this.settings.brightness);
     gl.uniform1f(this.uniforms.uContrast ?? null, this.settings.contrast);
     gl.uniform1f(this.uniforms.uSaturation ?? null, this.settings.saturation);
     gl.uniform1f(this.uniforms.uGamma ?? null, this.settings.gamma);
+    gl.uniform1f(this.uniforms.uHue ?? null, this.settings.hueDeg);
+    gl.uniform4f(
+      this.uniforms.uCrop ?? null,
+      crop.left,
+      crop.top,
+      crop.right,
+      crop.bottom
+    );
+    gl.uniform1i(this.uniforms.uRotation ?? null, this.settings.rotationDeg);
+    gl.uniform1f(this.uniforms.uSharpness ?? null, this.settings.sharpness);
+    gl.uniform2f(
+      this.uniforms.uTexel ?? null,
+      width > 0 ? 1 / width : 0,
+      height > 0 ? 1 / height : 0
+    );
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.bindVertexArray(null);

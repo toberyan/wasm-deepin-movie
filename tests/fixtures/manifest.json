@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generatedBy": "ffmpeg 6.1.5-0deepin4 (system GPL build; used only to create test fixtures, not shipped)",
-  "generatedAt": "2026-11-02T11:37:05.828Z",
+  "generatedAt": "2026-11-03T00:47:26.885Z",
   "note": "Synthetic lavfi sources. H.264/HEVC/AAC/AC-3 are test assets; review distribution/licensing before publishing binaries.",
   "fixtures": [
     {
@@ -116,6 +116,62 @@
       "expectedDecodePath": null,
       "license": "Generated locally for tests; not distributed as a product asset.",
       "notes": "Requires the project legacy/WASM build; the prebuilt webcodecs variant has no AVI demuxer."
+    },
+    {
+      "id": "S6",
+      "path": "generated/sample-multi-audio.mp4",
+      "sha256": "bdb39b482dab59664fd1f1cc17581f9b8f39457a9bd9953a6f43beb8297d1433",
+      "bytes": 255675,
+      "container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "durationSec": 2,
+      "video": {
+        "codec": "h264",
+        "profile": "High",
+        "width": 640,
+        "height": 360,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": {
+        "codec": "aac",
+        "sampleRate": 48000,
+        "channels": 1,
+        "channelLayout": "mono"
+      },
+      "subtitle": null,
+      "expectedDecodePath": {
+        "video": "webcodecs",
+        "audio": "webcodecs"
+      },
+      "license": "Generated locally for tests; not distributed as a product asset."
+    },
+    {
+      "id": "S7",
+      "path": "generated/sample-multi-video.webm",
+      "sha256": "70060fe03a1fa78660e3464d2638181ef7696671bafea8b9f60b0bdf9871bc4a",
+      "bytes": 67928,
+      "container": "matroska,webm",
+      "durationSec": 2.008,
+      "video": {
+        "codec": "vp9",
+        "profile": "Profile 0",
+        "width": 320,
+        "height": 180,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": {
+        "codec": "opus",
+        "sampleRate": 48000,
+        "channels": 1,
+        "channelLayout": "mono"
+      },
+      "subtitle": null,
+      "expectedDecodePath": {
+        "video": "webcodecs",
+        "audio": "webcodecs"
+      },
+      "license": "Generated locally for tests; not distributed as a product asset."
     },
     {
       "id": "S3",

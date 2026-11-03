@@ -137,6 +137,14 @@ export const mediaOpenInputSchema = z
         audio: z.enum(["webcodecs", "wasm"]).optional()
       })
       .strict()
+      .optional(),
+    preferredTracks: z
+      .object({
+        video: z.number().int().nonnegative().optional(),
+        audio: z.number().int().nonnegative().optional(),
+        subtitle: z.number().int().nonnegative().optional()
+      })
+      .strict()
       .optional()
   })
   .strict();
@@ -436,7 +444,8 @@ export const historyListOutputSchema = z
           lastPlayedAt: z.number(),
           positionUs: z.number().nonnegative(),
           durationUs: z.number().nonnegative(),
-          completed: z.boolean()
+          completed: z.boolean(),
+          source: mediaSourceSchema.optional()
         })
         .strict()
     )

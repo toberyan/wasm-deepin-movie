@@ -1107,6 +1107,48 @@
                 "positionUs": {
                   "minimum": 0,
                   "type": "number"
+                },
+                "source": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "file": {},
+                    "headers": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "type": "object"
+                    },
+                    "kind": {
+                      "enum": [
+                        "file",
+                        "url",
+                        "sourceId"
+                      ],
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "sizeBytes": {
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "sourceId": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "url": {
+                      "format": "uri",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
                 }
               },
               "required": [
@@ -1703,6 +1745,27 @@
                   "wasm"
                 ],
                 "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "preferredTracks": {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "subtitle": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "video": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "type": "object"

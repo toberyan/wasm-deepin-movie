@@ -15,6 +15,7 @@ interface PlayerState {
     etag?: string;
   } | null;
   tracks: { type: string; codec: string; selected: boolean }[];
+  selected: { video: number | null; audio: number | null; subtitle: number | null };
   positionUs: number;
   durationUs: number;
   stats: {
@@ -26,6 +27,7 @@ interface PlayerState {
     videoQueueBytes: number;
   };
   settings: Record<string, { status: string; effective: unknown; requested: unknown }>;
+  error: { code: string; message: string } | null;
 }
 
 interface PlayerWindow {
@@ -233,7 +235,17 @@ test("seeks, applies picture settings, loads subtitles and captures a screenshot
   const applied = await invoke(page, "settings.apply", {
     scope: "session",
     patch: {
-      video: { brightness: 0.2, contrast: 1.2, saturation: 1.1, gamma: 1.1 },
+      video: {
+        brightness: 0.2,
+        contrast: 1.2,
+        saturation: 1.1,
+        gamma: 1.1,
+        hueDeg: 120,
+        rotationDeg: 90,
+        crop: { left: 0.1, top: 0, right: 0, bottom: 0 },
+        sharpness: 0.5,
+        scaleMode: "nearest"
+      },
       audio: { volume: 0.4 },
       subtitle: { delayMs: 100 }
     }
@@ -245,6 +257,11 @@ test("seeks, applies picture settings, loads subtitles and captures a screenshot
     requested: 0.2,
     effective: 0.2
   });
+  expect(afterSettings.settings["video.hueDeg"]?.effective).toBe(120);
+  expect(afterSettings.settings["video.rotationDeg"]?.effective).toBe(90);
+  expect(afterSettings.settings["video.crop"]?.effective).toMatchObject({ left: 0.1 });
+  expect(afterSettings.settings["video.sharpness"]?.effective).toBe(0.5);
+  expect(afterSettings.settings["video.scaleMode"]?.effective).toBe("nearest");
 
   const subtitle = readFileSync(resolve("tests/fixtures/generated/subtitle.srt"));
   await page.locator('input[type="file"]').nth(1).setInputFiles({
@@ -489,6 +506,314 @@ test("survives 100 open/close cycles and invalid media", async ({ page }) => {
   expect(result.state.stats.videoQueueFrames).toBe(0);
   expect(result.state.stats.videoQueueBytes).toBe(0);
   expect(result.diagnostics.queues.videoFrames).toBe(0);
+});
+
+test.fixme("loads the threaded custom libav build when requested", async ({ page }) => {
+  test.skip(!customVariantAvailable, "custom wasm-player-p0 artifacts are not built");
+  test.skip(
+    !existsSync(resolve("apps/web/public/libav/libav-6.8.8.0-wasm-player-p0.thr.mjs")),
+    "threaded custom libav artifacts are not built"
+  );
+  test.setTimeout(120_000);
+  const avi = readFileSync(resolve("tests/fixtures/generated/sample-mpeg4-mp3.avi"));
+  await page.route("**/fixtures/sample-mpeg4-mp3.avi", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/x-msvideo", "Access-Control-Allow-Origin": "*" },
+      body: avi
+    })
+  );
+  await page.goto("/?libav=wasm-player-p0&libavThreads=mt");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const opened = await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-mpeg4-mp3.avi")).arrayBuffer();
+    const file = new File([bytes], "sample-mpeg4-mp3.avi", { type: "video/x-msvideo" });
+    return player.invoke({
+      requestId: `mt-open-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: { source: { kind: "file", file, name: "sample-mpeg4-mp3.avi" } }
+    });
+  });
+  if (opened.status !== "applied") throw new Error(JSON.stringify(opened.error));
+  await waitForMedia(page);
+  const diagnostics = await invoke(page, "diagnostics.get", {});
+  const warnings = (diagnostics.output as { warnings: string[] }).warnings;
+  expect(warnings.some((warning) => warning === "libav thread target: thr")).toBe(true);
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(snapshot && snapshot.stats.renderedFrames > 0);
+  });
+});
+
+test("auto-selects the custom WASM variant for AVI", async ({ page }) => {
+  test.skip(!customVariantAvailable, "custom wasm-player-p0 artifacts are not built");
+  test.setTimeout(120_000);
+  const avi = readFileSync(resolve("tests/fixtures/generated/sample-mpeg4-mp3.avi"));
+  await page.route("**/fixtures/sample-mpeg4-mp3.avi", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/x-msvideo", "Access-Control-Allow-Origin": "*" },
+      body: avi
+    })
+  );
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const openedResult = await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-mpeg4-mp3.avi")).arrayBuffer();
+    const file = new File([bytes], "sample-mpeg4-mp3.avi", { type: "video/x-msvideo" });
+    return player.invoke({
+      requestId: `avi-auto-open-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: {
+        source: { kind: "file", file, name: "sample-mpeg4-mp3.avi" }
+      }
+    });
+  });
+  expect(openedResult.status).toBe("applied");
+  await waitForMedia(page);
+  const opened = await state(page);
+  expect(opened.media?.decodePaths["video:0"]).toBe("wasm");
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(snapshot && snapshot.stats.renderedFrames > 0);
+  });
+});
+
+test("library UI manages history, playlist, bookmarks and theme", async ({ page }) => {
+  const data = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.route("**/fixtures/sample-h264-aac.mp4", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*" },
+      body: data
+    })
+  );
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  await invoke(page, "settings.apply", {
+    scope: "global",
+    patch: { app: { theme: "light" } }
+  });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+
+  const opened = await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-h264-aac.mp4")).arrayBuffer();
+    const file = new File([bytes], "sample-h264-aac.mp4", { type: "video/mp4" });
+    return player.invoke({
+      requestId: `library-open-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: { source: { kind: "file", file, name: "sample-h264-aac.mp4" } }
+    });
+  });
+  expect(opened.status).toBe("applied");
+  await waitForMedia(page);
+
+  await page.getByRole("button", { name: "列表" }).click();
+  await page.getByRole("tab", { name: "书签" }).click();
+  await page.getByRole("button", { name: "在当前位置添加书签" }).click();
+  await expect(page.locator(".library-item").filter({ hasText: "0:00" }).first()).toBeVisible();
+
+  await page.getByRole("tab", { name: "播放列表" }).click();
+  await page.getByPlaceholder("输入视频 URL").fill("https://example.com/movie.mp4");
+  await page.getByRole("button", { name: "添加" }).click();
+  await expect(page.locator(".library-item").filter({ hasText: "movie.mp4" })).toBeVisible();
+
+  await page.getByRole("tab", { name: "历史" }).click();
+  await expect(page.locator(".library-main").filter({ hasText: "sample-h264-aac.mp4" })).toBeVisible();
+  await page.waitForTimeout(700);
+
+  await page.reload();
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe("light");
+  await page.getByRole("button", { name: "列表" }).click();
+  await expect(page.locator(".library-item").filter({ hasText: "movie.mp4" })).toBeVisible();
+  await page.getByRole("tab", { name: "历史" }).click();
+  await expect(page.locator(".library-main").filter({ hasText: "sample-h264-aac.mp4" })).toBeVisible();
+});
+
+test("persists global settings and history across reloads", async ({ page }) => {
+  const data = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.route("**/fixtures/sample-h264-aac.mp4", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*" },
+      body: data
+    })
+  );
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const applied = await invoke(page, "settings.apply", {
+    scope: "global",
+    patch: { audio: { volume: 0.37 } }
+  });
+  expect(applied.status).toBe("applied");
+  const opened = await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-h264-aac.mp4")).arrayBuffer();
+    const file = new File([bytes], "sample-h264-aac.mp4", { type: "video/mp4" });
+    return player.invoke({
+      requestId: `persist-open-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: { source: { kind: "file", file, name: "sample-h264-aac.mp4" } }
+    });
+  });
+  expect(opened.status).toBe("applied");
+  await waitForMedia(page);
+  await page.waitForTimeout(700);
+
+  await page.reload();
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const snapshot = await state(page);
+  expect(snapshot.settings["audio.volume"]?.effective).toBeCloseTo(0.37, 5);
+  const history = await invoke(page, "history.list", {});
+  expect(history.status).toBe("applied");
+  const items = (history.output as { items: { name: string }[] }).items;
+  expect(items.some((item) => item.name === "sample-h264-aac.mp4")).toBe(true);
+
+  const playlist = await invoke(page, "playlist.add", {
+    sources: [{ kind: "url", url: "https://example.invalid/movie.mp4", name: "movie.mp4" }]
+  });
+  expect(playlist.status).toBe("applied");
+  await page.waitForTimeout(500);
+  await page.reload();
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const reloadedPlaylist = await invoke(page, "playlist.list", {});
+  expect(reloadedPlaylist.status).toBe("applied");
+  const playlistItems = (reloadedPlaylist.output as { items: { name: string; url?: string }[] }).items;
+  expect(playlistItems[0]?.url).toBe("https://example.invalid/movie.mp4");
+});
+
+test("opens H.264 MKV through the custom WASM decoder", async ({ page }) => {
+  test.skip(!customVariantAvailable, "custom wasm-player-p0 artifacts are not built");
+  const data = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac-subs.mkv"));
+  await page.route("**/fixtures/sample-h264-aac-subs.mkv", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/x-matroska", "Access-Control-Allow-Origin": "*" },
+      body: data
+    })
+  );
+  await page.goto("/?libav=wasm-player-p0");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const opened = await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-h264-aac-subs.mkv")).arrayBuffer();
+    const file = new File([bytes], "sample-h264-aac-subs.mkv", { type: "video/x-matroska" });
+    return player.invoke({
+      requestId: `mkv-h264-open-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: {
+        source: { kind: "file", file, name: "sample-h264-aac-subs.mkv" },
+        forceDecodePath: { video: "wasm", audio: "wasm" }
+      }
+    });
+  });
+  if (opened.status !== "applied") throw new Error(JSON.stringify(opened.error));
+  await waitForMedia(page);
+  const snapshot = await state(page);
+  expect(snapshot.media?.decodePaths["video:0"]).toBe("wasm");
+  await page.waitForFunction(() => {
+    const current = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(current && current.stats.renderedFrames > 0);
+  });
+});
+
+test("switches between multiple video tracks", async ({ page }) => {
+  const data = readFileSync(resolve("tests/fixtures/generated/sample-multi-video.webm"));
+  await page.route("**/fixtures/sample-multi-video.webm", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/webm", "Access-Control-Allow-Origin": "*" },
+      body: data
+    })
+  );
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const opened = await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-multi-video.webm")).arrayBuffer();
+    const file = new File([bytes], "sample-multi-video.webm", { type: "video/webm" });
+    return player.invoke({
+      requestId: `multi-video-open-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: { source: { kind: "file", file, name: "sample-multi-video.webm" } }
+    });
+  });
+  if (opened.status !== "applied") throw new Error(JSON.stringify(opened.error));
+  await waitForMedia(page);
+  let snapshot = await state(page);
+  expect(snapshot.selected.video).toBe(0);
+  expect(snapshot.tracks.filter((track) => track.type === "video")).toHaveLength(2);
+  const switched = await invoke(page, "tracks.select", { type: "video", index: 1 });
+  expect(switched.status).toBe("applied");
+  await waitForMedia(page);
+  snapshot = await state(page);
+  expect(snapshot.selected.video).toBe(1);
+  expect(snapshot.media?.decodePaths["video:1"]).toBe("webcodecs");
+  await page.waitForFunction(() => {
+    const current = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(current && current.stats.renderedFrames > 0);
+  });
+});
+
+test("switches between multiple audio tracks and preserves position", async ({ page }) => {
+  const data = readFileSync(resolve("tests/fixtures/generated/sample-multi-audio.mp4"));
+  await page.route("**/fixtures/sample-multi-audio.mp4", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*" },
+      body: data
+    })
+  );
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const opened = await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-multi-audio.mp4")).arrayBuffer();
+    const file = new File([bytes], "sample-multi-audio.mp4", { type: "video/mp4" });
+    return player.invoke({
+      requestId: `multi-open-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: { source: { kind: "file", file, name: "sample-multi-audio.mp4" } }
+    });
+  });
+  expect(opened.status).toBe("applied");
+  await waitForMedia(page);
+  let snapshot = await state(page);
+  expect(snapshot.selected.audio).toBe(1);
+  expect(snapshot.tracks.filter((track) => track.type === "audio")).toHaveLength(2);
+  await invoke(page, "playback.seek", { positionUs: 1_000_000 });
+  const before = await state(page);
+  expect(before.positionUs).toBeGreaterThan(900_000);
+
+  const switched = await invoke(page, "tracks.select", { type: "audio", index: 2 });
+  expect(switched.status).toBe("applied");
+  await waitForMedia(page);
+  snapshot = await state(page);
+  expect(snapshot.selected.audio).toBe(2);
+  expect(snapshot.positionUs).toBeGreaterThan(900_000);
+  expect(snapshot.media?.decodePaths["audio:2"]).toBe("webcodecs");
+
+  await page.getByRole("button", { name: "设置" }).click();
+  const german = page.locator(".track-item").filter({ hasText: "deu" });
+  await expect(german).toHaveClass(/selected/);
 });
 
 test("plays AVI through the custom WASM video/audio path", async ({ page }) => {

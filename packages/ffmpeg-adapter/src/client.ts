@@ -69,7 +69,12 @@ export class DemuxWorkerClient {
 
   open(
     source: WorkerSource,
-    options?: { name?: string; libavBase?: string; libavVariant?: string }
+    options?: {
+      name?: string;
+      libavBase?: string;
+      libavVariant?: string;
+      libavThreads?: "st" | "mt";
+    }
   ): Promise<ProbeResult> {
     return this.request<ProbeResult>(
       { type: "open", requestId: 0, source, options },

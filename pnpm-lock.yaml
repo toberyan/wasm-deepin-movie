@@ -96,6 +96,9 @@ importers:
       '@wasm-player/ffmpeg-adapter':
         specifier: workspace:*
         version: link:../../packages/ffmpeg-adapter
+      '@wasm-player/host':
+        specifier: workspace:*
+        version: link:../../packages/host
       '@wasm-player/media-engine':
         specifier: workspace:*
         version: link:../../packages/media-engine
@@ -105,6 +108,9 @@ importers:
       '@wasm-player/renderer':
         specifier: workspace:*
         version: link:../../packages/renderer
+      '@wasm-player/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       '@wasm-player/subtitles':
         specifier: workspace:*
         version: link:../../packages/subtitles
@@ -133,6 +139,12 @@ importers:
       vite:
         specifier: 7.3.7
         version: 7.3.7(@types/node@26.6.6)(tsx@4.23.15)
+
+  packages/agent-sdk:
+    dependencies:
+      '@wasm-player/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/audio:
     dependencies:
@@ -169,6 +181,9 @@ importers:
       '@wasm-player/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@wasm-player/player-core':
+        specifier: workspace:*
+        version: link:../player-core
 
   packages/mcp-server:
     dependencies:
@@ -196,6 +211,9 @@ importers:
       '@wasm-player/media-engine':
         specifier: workspace:*
         version: link:../media-engine
+      '@wasm-player/storage':
+        specifier: workspace:*
+        version: link:../storage
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -2917,7 +2935,7 @@ snapshots:
 
   ajv-formats@3.0.1:
     dependencies:
-      ajv: 8.20.0
+      ajv: 8.17.1
 
   ajv@6.15.0:
     dependencies:

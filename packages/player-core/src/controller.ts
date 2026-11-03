@@ -41,10 +41,12 @@ import {
   tracksSelectInputSchema,
   uiSetInputSchema,
   type ActionId,
+  type Bookmark,
   type CapabilityReport,
   type EffectiveValue,
   type InvokeRequest,
   type InvokeResult,
+  type HistoryItem,
   type MediaInfo,
   type MediaSourceInput,
   type PlayerErrorShape,
@@ -52,6 +54,10 @@ import {
   type PlayerEventType,
   type PlayerPhase,
   type PlayerSnapshot,
+  type PlayerStorage,
+  type PersistedPlayerState,
+  type PlaylistItem,
+  type Preset,
   type SelectedTracks,
   type SettingId,
   type SettingLayer,
@@ -83,6 +89,7 @@ export interface PlayerControllerOptions {
   eventBufferSize?: number;
   dedupeWindowMs?: number;
   maxDedupEntries?: number;
+  storage?: PlayerStorage;
 }
 
 interface JobRecord {
@@ -93,37 +100,6 @@ interface JobRecord {
   updatedAt: number;
   result?: unknown;
   error?: PlayerErrorShape;
-}
-
-interface Preset {
-  id: string;
-  name: string;
-  patch: SettingsPatch;
-  createdAt: number;
-}
-
-interface PlaylistItem {
-  index: number;
-  name: string;
-  source: MediaSourceInput;
-  durationUs?: number;
-}
-
-interface HistoryItem {
-  id: string;
-  name: string;
-  lastPlayedAt: number;
-  positionUs: number;
-  durationUs: number;
-  completed: boolean;
-}
-
-interface Bookmark {
-  id: string;
-  mediaId: string;
-  name: string;
-  positionUs: number;
-  createdAt: number;
 }
 
 interface HandlerResult {
@@ -184,6 +160,8 @@ export class PlayerController {
   readonly sessionId: string;
   private readonly engine: MediaEngine;
   private readonly host: PlayerHost | undefined;
+  private readonly storage: PlayerStorage | undefined;
+  readonly ready: Promise<void>;
   private readonly now: () => number;
   private readonly registry = createCoreRegistry();
   private readonly eventBufferSize: number;
@@ -224,16 +202,20 @@ export class PlayerController {
 
   private readonly presets = new Map<string, Preset>();
   private playlist: PlaylistItem[] = [];
+  private currentPlaylistIndex: number | null = null;
   private history: HistoryItem[] = [];
   private readonly bookmarks = new Map<string, Bookmark[]>();
 
   private suppressEngineEvents = false;
   private disposed = false;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPositionPersistAt = 0;
   private readonly unsubscribeEngine: () => void;
 
   constructor(options: PlayerControllerOptions) {
     this.engine = options.engine;
     this.host = options.host;
+    this.storage = options.storage;
     this.now = options.now ?? Date.now;
     this.sessionId = options.sessionId ?? `player-${Math.random().toString(36).slice(2, 10)}`;
     this.eventBufferSize = options.eventBufferSize ?? 1000;
@@ -242,6 +224,7 @@ export class PlayerController {
     this.capabilities = this.engine.getCapabilities();
     for (const id of SETTING_IDS) this.effective.set(id, emptyEffective(id));
     this.unsubscribeEngine = this.engine.subscribe((event) => this.onEngineEvent(event));
+    this.ready = this.restoreState();
   }
 
   getState(): PlayerSnapshot {
@@ -313,7 +296,13 @@ export class PlayerController {
 
   async dispose(): Promise<void> {
     if (this.disposed) return;
+    await this.ready.catch(() => undefined);
+    await this.flushPersist();
     this.disposed = true;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
     this.unsubscribeEngine();
     this.listeners.clear();
     const previous = this.phase;
@@ -322,10 +311,125 @@ export class PlayerController {
     this.emitEvent("phase", { phase: "disposed", previous });
   }
 
+  private async restoreState(): Promise<void> {
+    if (!this.storage) return;
+    let saved: PersistedPlayerState | null = null;
+    try {
+      saved = await this.storage.load();
+    } catch {
+      return;
+    }
+    if (!saved) return;
+
+    const changes: Partial<Record<SettingId, unknown>> = {};
+    for (const [rawId, value] of Object.entries(saved.globalSettings ?? {})) {
+      if (!isSettingId(rawId)) continue;
+      try {
+        const validated = validateSettingValue(rawId, value);
+        this.layers.global.set(rawId, validated);
+        changes[rawId] = validated;
+      } catch {
+        // Ignore a value that no longer validates after an upgrade.
+      }
+    }
+    if (Object.keys(changes).length > 0) {
+      try {
+        await this.applyResolvedSettings(nestSettings(changes), changes, "global");
+      } catch {
+        for (const id of Object.keys(changes) as SettingId[]) {
+          const resolved = this.resolveSetting(id);
+          this.effective.set(id, {
+            requested: resolved.value,
+            effective: resolved.value,
+            status: "applied",
+            layer: resolved.layer
+          });
+        }
+        this.applyEffectiveToSnapshot(this.getEffectiveSettings());
+      }
+    }
+
+    this.history = (Array.isArray(saved.history) ? saved.history : [])
+      .filter((item) => item && typeof item.id === "string" && typeof item.name === "string")
+      .slice(0, 100);
+    this.playlist = (Array.isArray(saved.playlist) ? saved.playlist : [])
+      .filter(
+        (item) =>
+          item &&
+          typeof item.name === "string" &&
+          item.source &&
+          (item.source.kind === "url" || item.source.kind === "sourceId")
+      )
+      .map((item, index) => ({ ...item, index }));
+    this.bookmarks.clear();
+    for (const item of Array.isArray(saved.bookmarks) ? saved.bookmarks : []) {
+      if (!item || typeof item.mediaId !== "string" || typeof item.id !== "string") continue;
+      const items = this.bookmarks.get(item.mediaId) ?? [];
+      items.push(item);
+      this.bookmarks.set(item.mediaId, items);
+    }
+    this.presets.clear();
+    for (const preset of Array.isArray(saved.presets) ? saved.presets : []) {
+      if (!preset || typeof preset.id !== "string" || typeof preset.name !== "string") continue;
+      if (!preset.patch || typeof preset.patch !== "object") continue;
+      this.presets.set(preset.id, preset);
+    }
+  }
+
+  private persistedState(): PersistedPlayerState {
+    return {
+      version: 1,
+      globalSettings: Object.fromEntries(this.layers.global),
+      history: this.history,
+      bookmarks: [...this.bookmarks.values()].flat(),
+      playlist: this.playlist
+        .filter((item) => item.source.kind !== "file")
+        .map((item, index) => ({ ...item, index })),
+      presets: [...this.presets.values()]
+    };
+  }
+
+  private schedulePersist(delayMs = 250): void {
+    if (!this.storage || this.disposed) return;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      void this.persist();
+    }, delayMs);
+  }
+
+  private async persist(): Promise<void> {
+    if (!this.storage) return;
+    try {
+      await this.storage.save(this.persistedState());
+    } catch {
+      // Persistence must never break playback.
+    }
+  }
+
+  private async flushPersist(): Promise<void> {
+    if (!this.storage) return;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    await this.persist();
+  }
+
+  private updateHistoryPosition(): void {
+    if (!this.media) return;
+    const item = this.history.find((entry) => entry.id === this.media?.sourceId);
+    if (!item) return;
+    item.positionUs = this.positionUs;
+    item.durationUs = this.durationUs;
+    item.completed = this.durationUs > 0 && this.positionUs >= this.durationUs * 0.98;
+  }
+
   private async execute(
     request: InvokeRequest<unknown>,
     now: number
   ): Promise<InvokeResult> {
+    await this.ready;
     if (
       typeof request.requestId !== "string" ||
       request.requestId.length === 0 ||
@@ -568,17 +672,21 @@ export class PlayerController {
     autoPlay?: boolean;
     startPositionUs?: number;
     forceDecodePath?: Partial<Record<TrackType, "webcodecs" | "wasm">>;
+    preferredTracks?: Partial<Record<TrackType, number>>;
+    fromPlaylist?: boolean;
   }): Promise<HandlerResult> {
+    if (!input.fromPlaylist) this.currentPlaylistIndex = null;
     const result = await this.engine.open({
       source: this.engineSource(input.source),
       autoPlay: input.autoPlay,
       startPositionUs: input.startPositionUs,
-      forceDecodePath: input.forceDecodePath
+      forceDecodePath: input.forceDecodePath,
+      preferredTracks: input.preferredTracks
     });
     this.layers.media.clear();
     this.applyOpenResult(result);
     await this.syncSettingsToEngine("session");
-    this.recordHistory(result.media);
+    this.recordHistory(result.media, input.source);
     return {
       status: "applied",
       output: { media: result.media },
@@ -603,6 +711,9 @@ export class PlayerController {
   }
 
   private async closeMedia(): Promise<HandlerResult> {
+    this.currentPlaylistIndex = null;
+    this.updateHistoryPosition();
+    this.schedulePersist(0);
     await this.engine.close();
     this.layers.media.clear();
     this.media = null;
@@ -803,15 +914,15 @@ export class PlayerController {
     for (const [id, requested] of Object.entries(flat) as [SettingId, unknown][]) {
       const engineValue = engineResult.effective[id];
       let value: EffectiveValue;
-      if (engineValue) {
-        value = engineValue;
-      } else if (isCoreOwned(id)) {
+      if (isCoreOwned(id)) {
         value = {
           requested,
           effective: requested,
           status: "applied",
           layer: scope
         };
+      } else if (engineValue) {
+        value = engineValue;
       } else {
         value = {
           requested,
@@ -825,6 +936,7 @@ export class PlayerController {
       effective[id] = value;
     }
     this.applyEffectiveToSnapshot(effective);
+    if (scope === "global") this.schedulePersist();
     const allEffective = Object.fromEntries(this.effective);
     return {
       status: "applied",
@@ -854,6 +966,7 @@ export class PlayerController {
       const patch = nestSettings(changed);
       await this.applyResolvedSettings(patch, changed, scope);
     }
+    if (scope === "global") this.schedulePersist();
     const effective = Object.fromEntries(this.effective);
     return {
       status: "applied",
@@ -887,15 +1000,15 @@ export class PlayerController {
       const resolved = this.resolveSetting(id);
       const engineValue = engineResult.effective[id];
       let value: EffectiveValue;
-      if (engineValue) {
-        value = engineValue;
-      } else if (isCoreOwned(id)) {
+      if (isCoreOwned(id)) {
         value = {
           requested: resolved.value,
           effective: resolved.value,
           status: "applied",
           layer: resolved.layer
         };
+      } else if (engineValue) {
+        value = engineValue;
       } else {
         value = {
           requested: resolved.value,
@@ -1201,6 +1314,7 @@ export class PlayerController {
       changed[id] = validated;
     }
     await this.applyResolvedSettings(nestSettings(changed), changed, "global");
+    this.schedulePersist();
     return {
       status: "applied",
       bumpRevision: true,
@@ -1217,6 +1331,7 @@ export class PlayerController {
   }): HandlerResult {
     const record: Preset = { ...preset, createdAt: preset.createdAt ?? this.now() };
     this.presets.set(record.id, record);
+    this.schedulePersist();
     return { status: "applied", output: { preset: record }, bumpRevision: true };
   }
 
@@ -1235,6 +1350,7 @@ export class PlayerController {
 
   private deletePreset(id: string): HandlerResult {
     if (!this.presets.delete(id)) throw invalidRequest(`unknown preset: ${id}`);
+    this.schedulePersist();
     return { status: "applied", bumpRevision: true };
   }
 
@@ -1248,6 +1364,7 @@ export class PlayerController {
       };
       this.playlist.push(item);
     }
+    this.schedulePersist();
     return {
       status: "applied",
       bumpRevision: true,
@@ -1259,6 +1376,7 @@ export class PlayerController {
     if (index < 0 || index >= this.playlist.length) throw invalidRequest(`playlist index out of range: ${index}`);
     this.playlist.splice(index, 1);
     this.playlist = this.playlist.map((item, next) => ({ ...item, index: next }));
+    this.schedulePersist();
     return {
       status: "applied",
       bumpRevision: true,
@@ -1268,6 +1386,7 @@ export class PlayerController {
 
   private clearPlaylist(): HandlerResult {
     this.playlist = [];
+    this.schedulePersist();
     return {
       status: "applied",
       bumpRevision: true,
@@ -1278,7 +1397,8 @@ export class PlayerController {
   private async playPlaylist(index: number): Promise<HandlerResult> {
     const item = this.playlist[index];
     if (!item) throw invalidRequest(`playlist index out of range: ${index}`);
-    return this.openMedia({ source: item.source, autoPlay: true });
+    this.currentPlaylistIndex = index;
+    return this.openMedia({ source: item.source, autoPlay: true, fromPlaylist: true });
   }
 
   private playlistItems(): Record<string, unknown>[] {
@@ -1300,23 +1420,27 @@ export class PlayerController {
     return "local-file";
   }
 
-  private recordHistory(media: MediaInfo): void {
+  private recordHistory(media: MediaInfo, source: MediaSourceInput): void {
     const existing = this.history.find((item) => item.id === media.sourceId);
     if (existing) {
       existing.lastPlayedAt = this.now();
       existing.name = media.name;
       existing.durationUs = media.durationUs;
+      if (source.kind !== "file") existing.source = source;
       return;
     }
-    this.history.unshift({
+    const item: HistoryItem = {
       id: media.sourceId,
       name: media.name,
       lastPlayedAt: this.now(),
       positionUs: 0,
       durationUs: media.durationUs,
       completed: false
-    });
+    };
+    if (source.kind !== "file") item.source = source;
+    this.history.unshift(item);
     if (this.history.length > 100) this.history.length = 100;
+    this.schedulePersist();
   }
 
   private listHistory(limit: number): HandlerResult {
@@ -1349,6 +1473,7 @@ export class PlayerController {
     };
     const items = [...this.currentBookmarks(), item];
     this.bookmarks.set(media.sourceId, items);
+    this.schedulePersist();
     return { status: "applied", output: { items }, bumpRevision: true };
   }
 
@@ -1357,6 +1482,7 @@ export class PlayerController {
     if (!media) throw new PlayerError("NEEDS_MEDIA", "no media is open");
     const items = this.currentBookmarks().filter((item) => item.id !== id);
     this.bookmarks.set(media.sourceId, items);
+    this.schedulePersist();
     return { status: "applied", output: { items }, bumpRevision: true };
   }
 
@@ -1371,6 +1497,12 @@ export class PlayerController {
       case "position": {
         this.positionUs = event.positionUs;
         this.durationUs = event.durationUs;
+        this.updateHistoryPosition();
+        const now = this.now();
+        if (now - this.lastPositionPersistAt >= 5000) {
+          this.lastPositionPersistAt = now;
+          this.schedulePersist();
+        }
         this.emitEvent("position", { positionUs: event.positionUs, durationUs: event.durationUs });
         break;
       }
@@ -1437,14 +1569,24 @@ export class PlayerController {
   }
 
   private async handleLoopOnEnd(): Promise<void> {
-    const loop = this.effective.get("playback.loop");
-    if (loop?.effective !== "media") return;
-    try {
-      await this.engine.seek(0);
-      await this.engine.play();
-    } catch {
-      // The ended event remains authoritative; a failed loop is surfaced by the
-      // engine's error event.
+    const loop = this.effective.get("playback.loop")?.effective;
+    if (loop === "media") {
+      try {
+        await this.engine.seek(0);
+        await this.engine.play();
+      } catch {
+        // The ended event remains authoritative; a failed loop is surfaced by
+        // the engine's error event.
+      }
+      return;
+    }
+    if (loop === "playlist" && this.currentPlaylistIndex !== null && this.playlist.length > 0) {
+      const next = (this.currentPlaylistIndex + 1) % this.playlist.length;
+      try {
+        await this.playPlaylist(next);
+      } catch {
+        // Keep the ended event visible if the next entry cannot be opened.
+      }
     }
   }
 

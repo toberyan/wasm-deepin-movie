@@ -13,6 +13,7 @@ class WasmPlayerPcmProcessor extends AudioWorkletProcessor {
     this.bufferStartUs = 0;
     this.hasTimestamp = false;
     this.rate = 1;
+    this.gain = 1;
     this.playing = false;
     this.buffering = true;
     this.lastClockSec = -1;
@@ -97,7 +98,8 @@ class WasmPlayerPcmProcessor extends AudioWorkletProcessor {
         const ring = this.ring[Math.min(channel, this.ring.length - 1)];
         const a = ring[i0];
         const b = ring[i1];
-        output[channel][i] = a + (b - a) * fraction;
+        const sample = (a + (b - a) * fraction) * this.gain;
+        output[channel][i] = Math.max(-1, Math.min(1, sample));
       }
       this.readFrame += this.rate;
     }
@@ -137,6 +139,9 @@ class WasmPlayerPcmProcessor extends AudioWorkletProcessor {
       case "rate":
         this.rate = message.value;
         return;
+      case "gain":
+        this.gain = message.value;
+        return;
     }
   }
 }
@@ -161,6 +166,9 @@ export class AudioOutput {
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
   private gain: GainNode | null = null;
+  private panner: StereoPannerNode | null = null;
+  private gainDb = 0;
+  private balance = 0;
   private workletUrl: string | null = null;
   private configuredChannels = 0;
   private latestClock: AudioClockSample | null = null;
@@ -255,6 +263,20 @@ export class AudioOutput {
     }
   }
 
+  setGainDb(gainDb: number): void {
+    this.gainDb = Math.max(-24, Math.min(12, gainDb));
+    this.node?.port.postMessage({ type: "gain", value: 10 ** (this.gainDb / 20) });
+  }
+
+  setBalance(balance: number): void {
+    this.balance = Math.max(-1, Math.min(1, balance));
+    const panner = this.panner;
+    const context = this.context;
+    if (panner && context) {
+      panner.pan.setTargetAtTime(this.balance, context.currentTime, 0.02);
+    }
+  }
+
   setUnderrunHandler(handler: () => void): void {
     this.onUnderrun = handler;
   }
@@ -278,8 +300,10 @@ export class AudioOutput {
   async close(): Promise<void> {
     this.node?.disconnect();
     this.gain?.disconnect();
+    this.panner?.disconnect();
     this.node = null;
     this.gain = null;
+    this.panner = null;
     if (this.context) {
       await this.context.close().catch(() => undefined);
       this.context = null;
@@ -301,8 +325,11 @@ export class AudioOutput {
     });
     const gain = context.createGain();
     gain.gain.value = this.muted ? 0 : this.volume;
+    const panner = context.createStereoPanner();
+    panner.pan.value = this.balance;
     node.connect(gain);
-    gain.connect(context.destination);
+    gain.connect(panner);
+    panner.connect(context.destination);
     node.port.onmessage = (event: MessageEvent<{
       type: string;
       mediaTimeUs?: number;
@@ -333,7 +360,9 @@ export class AudioOutput {
         Math.ceil(this.options.sampleRate * (this.options.capacitySeconds ?? 2))
       )
     });
+    node.port.postMessage({ type: "gain", value: 10 ** (this.gainDb / 20) });
     this.node = node;
     this.gain = gain;
+    this.panner = panner;
   }
 }

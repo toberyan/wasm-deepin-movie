@@ -9,6 +9,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@wasm-player/contracts": "workspace:*"
+    "@wasm-player/contracts": "workspace:*",
+    "@wasm-player/player-core": "workspace:*"
   }
 }

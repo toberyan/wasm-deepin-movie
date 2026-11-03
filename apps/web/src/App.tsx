@@ -2,13 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ACTION_IDS,
   type ActionId,
+  type Bookmark,
+  type HistoryItem,
   type InvokeResult,
   type PlayerSnapshot,
   type TrackInfo
 } from "@wasm-player/contracts";
 import { PlayerController } from "@wasm-player/player-core";
+import { createPlayerStorage } from "@wasm-player/storage";
 import { BrowserMediaEngine } from "./player/browser-media-engine";
-import { browserHost } from "./player/browser-host";
+import { browserHost } from "@wasm-player/host";
 import { CompanionClient, type CompanionBootstrap } from "./player/companion-client";
 
 function formatTime(us: number): string {
@@ -65,9 +68,71 @@ export function App() {
   const [showStats, setShowStats] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showPlaylist, setShowPlaylist] = useState(false);
+  const [libraryTab, setLibraryTab] = useState<"playlist" | "history" | "bookmarks">("playlist");
+  const [playlistItems, setPlaylistItems] = useState<
+    { index: number; name: string; url?: string; sourceId?: string; durationUs?: number }[]
+  >([]);
+  const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
+  const [bookmarkItems, setBookmarkItems] = useState<Bookmark[]>([]);
+  const [urlDraft, setUrlDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [agentConnected, setAgentConnected] = useState(false);
   const requestSeq = useRef(0);
+  const themeSetting = snapshot?.settings["app.theme"]?.effective;
+  const reduceMotionSetting = snapshot?.settings["app.reduceMotion"]?.effective;
+  const currentMediaKey = snapshot?.media?.sourceId ?? null;
+
+  useEffect(() => {
+    const theme = String(themeSetting ?? "dark");
+    const query = window.matchMedia("(prefers-color-scheme: light)");
+    const apply = () => {
+      document.documentElement.dataset.theme =
+        theme === "system" ? (query.matches ? "light" : "dark") : theme;
+    };
+    apply();
+    query.addEventListener("change", apply);
+    return () => query.removeEventListener("change", apply);
+  }, [themeSetting]);
+
+  useEffect(() => {
+    document.documentElement.dataset.reduceMotion = reduceMotionSetting ? "true" : "false";
+  }, [reduceMotionSetting]);
+
+  useEffect(() => {
+    if (!showPlaylist) return;
+    let cancelled = false;
+    const load = async () => {
+      const [playlistResult, historyResult] = await Promise.all([
+        invoke(ACTION_IDS.playlistList),
+        invoke(ACTION_IDS.historyList, { limit: 50 })
+      ]);
+      if (cancelled) return;
+      if (playlistResult.status === "applied") {
+        setPlaylistItems(
+          (playlistResult.output as { items: typeof playlistItems } | undefined)?.items ?? []
+        );
+      }
+      if (historyResult.status === "applied") {
+        setHistoryItems(
+          (historyResult.output as { items: HistoryItem[] } | undefined)?.items ?? []
+        );
+      }
+      if (currentMediaKey) {
+        const bookmarkResult = await invoke(ACTION_IDS.bookmarksList);
+        if (!cancelled && bookmarkResult.status === "applied") {
+          setBookmarkItems(
+            (bookmarkResult.output as { items: Bookmark[] } | undefined)?.items ?? []
+          );
+        }
+      } else if (!cancelled) {
+        setBookmarkItems([]);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [showPlaylist, snapshot?.revision, currentMediaKey]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -94,13 +159,17 @@ export function App() {
           overlayContainer: overlay,
           libavBase: new URL("/libav/", window.location.origin).href,
           libavVariant: new URLSearchParams(window.location.search).get("libav") ?? undefined,
+          libavThreads:
+            new URLSearchParams(window.location.search).get("libavThreads") === "mt" ? "mt" : "st",
           onLog: (logMessage, details) => console.debug("[player]", logMessage, details)
         });
         controller = new PlayerController({
           engine,
           sessionId: bootstrap?.sessionId ?? "web-main",
-          host: browserHost
+          host: browserHost,
+          storage: createPlayerStorage()
         });
+        await controller.ready;
         if (!active) {
           await engine.dispose();
           return;
@@ -144,6 +213,12 @@ export function App() {
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
         void seekRelative(5);
+      } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        const step = Number(snapshot?.settings["playback.volumeStep"]?.effective ?? 0.05);
+        const current = snapshot?.volume ?? 1;
+        const volume = Math.min(1, Math.max(0, current + (event.key === "ArrowUp" ? step : -step)));
+        void invoke(ACTION_IDS.playbackSetVolume, { volume, muted: false });
       } else if (event.key.toLowerCase() === "f") {
         void invoke(ACTION_IDS.uiSet, { fullscreen: !document.fullscreenElement });
       }
@@ -182,7 +257,7 @@ export function App() {
     try {
       await invoke(ACTION_IDS.mediaOpen, {
         source: { kind: "file", file, name: file.name },
-        autoPlay: false
+        autoPlay: Boolean(snapshot?.settings["playback.autoPlay"]?.effective ?? false)
       });
     } finally {
       setBusy(false);
@@ -213,6 +288,56 @@ export function App() {
 
   const applyPatch = async (patch: Record<string, unknown>) => {
     await invoke(ACTION_IDS.settingsApply, { scope: "session", patch });
+  };
+
+  const applyGlobalPatch = async (patch: Record<string, unknown>) => {
+    await invoke(ACTION_IDS.settingsApply, { scope: "global", patch });
+  };
+
+  const openHistory = async (item: HistoryItem) => {
+    const source =
+      item.source ??
+      (item.id.startsWith("http://") || item.id.startsWith("https://")
+        ? { kind: "url" as const, url: item.id, name: item.name }
+        : null);
+    if (!source) {
+      setMessage("本地文件历史需要重新选择文件");
+      return;
+    }
+    await invoke(ACTION_IDS.mediaOpen, {
+      source,
+      startPositionUs: item.positionUs,
+      autoPlay: true
+    });
+    setShowPlaylist(false);
+  };
+
+  const addUrlToPlaylist = async () => {
+    const value = urlDraft.trim();
+    if (!value) return;
+    try {
+      const parsed = new URL(value);
+      await invoke(ACTION_IDS.playlistAdd, {
+        sources: [
+          {
+            kind: "url",
+            url: parsed.href,
+            name: parsed.pathname.split("/").pop() || parsed.hostname
+          }
+        ]
+      });
+      setUrlDraft("");
+    } catch {
+      setMessage("请输入有效的 URL");
+    }
+  };
+
+  const addBookmark = async () => {
+    if (!snapshot?.media) return;
+    await invoke(ACTION_IDS.bookmarksAdd, {
+      name: formatTime(snapshot.positionUs),
+      positionUs: snapshot.positionUs
+    });
   };
 
   const takeScreenshot = async () => {
@@ -286,7 +411,6 @@ export function App() {
               setShowPlaylist((value) => !value);
               setShowSettings(false);
             }}
-            disabled={!snapshot?.media}
           >
             列表
           </button>
@@ -342,6 +466,32 @@ export function App() {
               </button>
             </div>
             <section>
+              <h3>外观</h3>
+              <label className="control-row">
+                <span>主题</span>
+                <select
+                  value={String(themeSetting ?? "dark")}
+                  onChange={(event) =>
+                    void applyGlobalPatch({ app: { theme: event.target.value } })
+                  }
+                >
+                  <option value="system">跟随系统</option>
+                  <option value="dark">深色</option>
+                  <option value="light">浅色</option>
+                </select>
+              </label>
+              <label className="control-row checkbox">
+                <span>减少动态效果</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(reduceMotionSetting ?? false)}
+                  onChange={(event) =>
+                    void applyGlobalPatch({ app: { reduceMotion: event.target.checked } })
+                  }
+                />
+              </label>
+            </section>
+            <section>
               <h3>画面</h3>
               <label className="control-row">
                 <span>亮度 <em>{effectiveStatus(snapshot, "video.brightness")}</em></span>
@@ -392,6 +542,57 @@ export function App() {
                 />
               </label>
               <label className="control-row">
+                <span>色相 <em>{effectiveStatus(snapshot, "video.hueDeg")}</em></span>
+                <input
+                  type="range"
+                  min={-180}
+                  max={180}
+                  value={sliderValue("video.hueDeg", 0)}
+                  onChange={(event) =>
+                    void applyPatch({ video: { hueDeg: Number(event.target.value) } })
+                  }
+                />
+              </label>
+              <label className="control-row">
+                <span>旋转 <em>{effectiveStatus(snapshot, "video.rotationDeg")}</em></span>
+                <select
+                  value={String(snapshot.settings["video.rotationDeg"]?.effective ?? 0)}
+                  onChange={(event) =>
+                    void applyPatch({ video: { rotationDeg: Number(event.target.value) } })
+                  }
+                >
+                  <option value="0">0°</option>
+                  <option value="90">90°</option>
+                  <option value="180">180°</option>
+                  <option value="270">270°</option>
+                </select>
+              </label>
+              <label className="control-row">
+                <span>锐化 <em>{effectiveStatus(snapshot, "video.sharpness")}</em></span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={sliderValue("video.sharpness", 0, 100)}
+                  onChange={(event) =>
+                    void applyPatch({ video: { sharpness: Number(event.target.value) / 100 } })
+                  }
+                />
+              </label>
+              <label className="control-row">
+                <span>缩放 <em>{effectiveStatus(snapshot, "video.scaleMode")}</em></span>
+                <select
+                  value={String(snapshot.settings["video.scaleMode"]?.effective ?? "high-quality")}
+                  onChange={(event) =>
+                    void applyPatch({ video: { scaleMode: event.target.value } })
+                  }
+                >
+                  <option value="high-quality">高质量</option>
+                  <option value="bilinear">双线性</option>
+                  <option value="nearest">最近邻</option>
+                </select>
+              </label>
+              <label className="control-row">
                 <span>画面适配</span>
                 <select
                   value={(snapshot.settings["video.fit"]?.effective as string) ?? "contain"}
@@ -424,6 +625,30 @@ export function App() {
                   type="checkbox"
                   checked={snapshot.muted}
                   onChange={(event) => void applyPatch({ audio: { muted: event.target.checked } })}
+                />
+              </label>
+              <label className="control-row">
+                <span>增益 (dB) <em>{effectiveStatus(snapshot, "audio.gainDb")}</em></span>
+                <input
+                  type="range"
+                  min={-24}
+                  max={12}
+                  value={sliderValue("audio.gainDb", 0)}
+                  onChange={(event) =>
+                    void applyPatch({ audio: { gainDb: Number(event.target.value) } })
+                  }
+                />
+              </label>
+              <label className="control-row">
+                <span>左右平衡 <em>{effectiveStatus(snapshot, "audio.balance")}</em></span>
+                <input
+                  type="range"
+                  min={-100}
+                  max={100}
+                  value={sliderValue("audio.balance", 0, 100)}
+                  onChange={(event) =>
+                    void applyPatch({ audio: { balance: Number(event.target.value) / 100 } })
+                  }
                 />
               </label>
             </section>
@@ -485,12 +710,37 @@ export function App() {
                   ))}
                 </select>
               </label>
+              <label className="control-row">
+                <span>循环</span>
+                <select
+                  value={String(snapshot.settings["playback.loop"]?.effective ?? "off")}
+                  onChange={(event) =>
+                    void invoke(ACTION_IDS.loopSet, { mode: event.target.value })
+                  }
+                >
+                  <option value="off">关闭</option>
+                  <option value="media">单个文件</option>
+                  <option value="playlist">播放列表</option>
+                </select>
+              </label>
+              <label className="control-row checkbox">
+                <span>打开后自动播放</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(snapshot.settings["playback.autoPlay"]?.effective ?? false)}
+                  onChange={(event) =>
+                    void applyGlobalPatch({ playback: { autoPlay: event.target.checked } })
+                  }
+                />
+              </label>
             </section>
             <section>
               <h3>轨道</h3>
-              {(["audio", "subtitle"] as const).map((type) => (
+              {(["video", "audio", "subtitle"] as const).map((type) => (
                 <div className="track-group" key={type}>
-                  <div className="track-label">{type === "audio" ? "音频" : "字幕"}</div>
+                  <div className="track-label">
+                    {type === "video" ? "视频" : type === "audio" ? "音频" : "字幕"}
+                  </div>
                   {(tracksByType[type] ?? []).length === 0 && <div className="muted">无</div>}
                   {(tracksByType[type] ?? []).map((track) => (
                     <button
@@ -521,15 +771,150 @@ export function App() {
         )}
 
         {showPlaylist && snapshot && (
-          <aside className="drawer">
+          <aside className="drawer library-drawer">
             <div className="drawer-header">
-              <h2>播放列表</h2>
+              <h2>媒体库</h2>
               <button className="icon-button" onClick={() => setShowPlaylist(false)}>
                 ×
               </button>
             </div>
-            <div className="muted">P0 先支持单文件；列表管理在 P1 接入。</div>
-            <div className="playlist-item">{snapshot.media?.name ?? "无媒体"}</div>
+            <div className="library-tabs" role="tablist">
+              {(
+                [
+                  ["playlist", "播放列表"],
+                  ["history", "历史"],
+                  ["bookmarks", "书签"]
+                ] as const
+              ).map(([tab, label]) => (
+                <button
+                  key={tab}
+                  role="tab"
+                  aria-selected={libraryTab === tab}
+                  className={libraryTab === tab ? "active" : ""}
+                  onClick={() => setLibraryTab(tab)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {libraryTab === "playlist" && (
+              <>
+                <div className="library-url">
+                  <input
+                    value={urlDraft}
+                    placeholder="输入视频 URL"
+                    onChange={(event) => setUrlDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void addUrlToPlaylist();
+                    }}
+                  />
+                  <button className="secondary-button" onClick={() => void addUrlToPlaylist()}>
+                    添加
+                  </button>
+                </div>
+                {playlistItems.length === 0 ? (
+                  <div className="muted">列表为空。可添加 HTTP 视频地址。</div>
+                ) : (
+                  <div className="library-list">
+                    {playlistItems.map((item) => (
+                      <div className="library-item" key={`${item.index}-${item.name}`}>
+                        <button
+                          className="library-main"
+                          onClick={() => void invoke(ACTION_IDS.playlistPlay, { index: item.index })}
+                        >
+                          <span>{item.name}</span>
+                          <small>{item.url ?? item.sourceId ?? ""}</small>
+                        </button>
+                        <button
+                          className="library-remove"
+                          aria-label={`移除 ${item.name}`}
+                          onClick={() =>
+                            void invoke(ACTION_IDS.playlistRemove, { index: item.index })
+                          }
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {playlistItems.length > 0 && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => void invoke(ACTION_IDS.playlistClear)}
+                  >
+                    清空列表
+                  </button>
+                )}
+              </>
+            )}
+
+            {libraryTab === "history" && (
+              <div className="library-list">
+                {historyItems.length === 0 && <div className="muted">暂无播放历史。</div>}
+                {historyItems.map((item) => {
+                  const reopenable =
+                    item.source !== undefined ||
+                    item.id.startsWith("http://") ||
+                    item.id.startsWith("https://");
+                  return (
+                    <button
+                      key={`${item.id}-${item.lastPlayedAt}`}
+                      className="library-main library-row"
+                      disabled={!reopenable}
+                      onClick={() => void openHistory(item)}
+                      title={reopenable ? "从上次位置继续" : "本地文件需要重新选择"}
+                    >
+                      <span>{item.name}</span>
+                      <small>
+                        {formatTime(item.positionUs)} / {formatTime(item.durationUs)} ·{" "}
+                        {new Date(item.lastPlayedAt).toLocaleString()}
+                      </small>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {libraryTab === "bookmarks" && (
+              <>
+                <button
+                  className="secondary-button"
+                  disabled={!snapshot.media}
+                  onClick={() => void addBookmark()}
+                >
+                  在当前位置添加书签
+                </button>
+                <div className="library-list">
+                  {bookmarkItems.length === 0 && (
+                    <div className="muted">
+                      {snapshot.media ? "当前媒体暂无书签。" : "打开媒体后可添加书签。"}
+                    </div>
+                  )}
+                  {bookmarkItems.map((item) => (
+                    <div className="library-item" key={item.id}>
+                      <button
+                        className="library-main"
+                        onClick={() =>
+                          void invoke(ACTION_IDS.playbackSeek, { positionUs: item.positionUs })
+                        }
+                      >
+                        <span>{item.name}</span>
+                        <small>{formatTime(item.positionUs)}</small>
+                      </button>
+                      <button
+                        className="library-remove"
+                        aria-label={`删除书签 ${item.name}`}
+                        onClick={() => void invoke(ACTION_IDS.bookmarksRemove, { id: item.id })}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </aside>
         )}
 

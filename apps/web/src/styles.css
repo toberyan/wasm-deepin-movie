@@ -8,6 +8,8 @@
   --accent: #3b82f6;
   --accent-strong: #60a5fa;
   --danger: #f87171;
+  --app-glow: #171d27;
+  --topbar-bg: rgba(16, 18, 22, 0.82);
   --radius: 10px;
   --shadow: 0 18px 45px rgba(0, 0, 0, 0.45);
   color-scheme: dark;
@@ -42,7 +44,23 @@ button {
   display: grid;
   grid-template-rows: 56px minmax(0, 1fr) 68px;
   height: 100%;
-  background: radial-gradient(circle at 50% 0%, #171d27 0%, var(--bg) 60%);
+  background: radial-gradient(circle at 50% 0%, var(--app-glow) 0%, var(--bg) 60%);
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --surface-raised: #eef2f8;
+  --border: #d5dce8;
+  --fg: #18202e;
+  --muted: #5d6b80;
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --danger: #dc2626;
+  --app-glow: #e7edf7;
+  --topbar-bg: rgba(255, 255, 255, 0.86);
+  --shadow: 0 18px 45px rgba(30, 45, 70, 0.16);
+  color-scheme: light;
 }
 
 .topbar {
@@ -50,7 +68,7 @@ button {
   align-items: center;
   gap: 18px;
   padding: 0 18px;
-  background: rgba(16, 18, 22, 0.82);
+  background: var(--topbar-bg);
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(12px);
 }
@@ -503,4 +521,116 @@ button {
 .agent-status.connected .dot {
   background: #34d399;
   box-shadow: 0 0 8px rgba(52, 211, 153, 0.8);
+}
+
+.library-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-raised);
+}
+
+.library-tabs button {
+  flex: 1;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  padding: 7px 4px;
+  font-size: 12px;
+}
+
+.library-tabs button.active {
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+.library-url {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.library-url input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-raised);
+  color: var(--fg);
+  padding: 7px 9px;
+}
+
+.library-url .secondary-button {
+  width: auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.library-item {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.library-main {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--fg);
+  padding: 9px 10px;
+}
+
+.library-main:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.library-main span,
+.library-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-main small {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.library-remove {
+  width: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.library-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+:root[data-reduce-motion="true"] *,
+:root[data-reduce-motion="true"] *::before,
+:root[data-reduce-motion="true"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
 }

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generated = join(root, "tests/fixtures/generated");
 const files = (await readdir(generated))
-  .filter((name) => /\.(mp4|mkv|webm|avi)$/.test(name))
+  .filter((name) => /\.(mp4|mkv|webm|avi)$/.test(name) && name !== "large-sparse.mp4")
   .sort();
 
 const ids = {
@@ -15,7 +15,9 @@ const ids = {
   "sample-hevc-ac3.mkv": "S2",
   "sample-vp9-opus.webm": "S3",
   "sample-mpeg4-mp3.avi": "S4",
-  "sample-h264-aac-subs.mkv": "S5"
+  "sample-h264-aac-subs.mkv": "S5",
+  "sample-multi-audio.mp4": "S6",
+  "sample-multi-video.webm": "S7"
 };
 
 const expected = {
@@ -23,7 +25,9 @@ const expected = {
   "sample-hevc-ac3.mkv": { video: "webcodecs", audio: "wasm" },
   "sample-vp9-opus.webm": { video: "webcodecs", audio: "webcodecs" },
   "sample-mpeg4-mp3.avi": null,
-  "sample-h264-aac-subs.mkv": { video: "webcodecs", audio: "webcodecs" }
+  "sample-h264-aac-subs.mkv": { video: "webcodecs", audio: "webcodecs" },
+  "sample-multi-audio.mp4": { video: "webcodecs", audio: "webcodecs" },
+  "sample-multi-video.webm": { video: "webcodecs", audio: "webcodecs" }
 };
 
 const fixtures = [];

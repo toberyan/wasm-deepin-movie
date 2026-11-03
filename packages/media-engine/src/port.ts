@@ -23,6 +23,7 @@ export interface OpenMediaRequest {
   autoPlay?: boolean;
   startPositionUs?: number;
   forceDecodePath?: Partial<Record<TrackType, "webcodecs" | "wasm">>;
+  preferredTracks?: Partial<Record<TrackType, number>>;
 }
 
 export interface MediaOpenResult {

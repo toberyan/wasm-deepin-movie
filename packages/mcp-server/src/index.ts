@@ -102,7 +102,11 @@ export function createMcpServer(options: McpServerOptions): Server {
         return okResult({ actions: registry.describe() });
       }
       if (name === "settings_describe") {
-        return okResult({ settings: describeSettings() });
+        const group = (params as { group?: string }).group;
+        const settings = describeSettings();
+        return okResult({
+          settings: group ? settings.filter((setting) => setting.group === group) : settings
+        });
       }
       if (name === "sessions_list") {
         return okResult({ sessions: await options.bridge.listSessions() });
