@@ -3,6 +3,32 @@
 Date: 2026-11-03. Baseline: `cee63d1` + current working tree.
 Evidence: 78 unit tests, 9 browser e2e tests, `pnpm check`, `pnpm build`.
 
+## 0. Progress since the first audit
+
+Completed in the current tree:
+
+- Legacy containers auto-select the custom `wasm-player-p0` variant; AVI no
+  longer needs a query parameter. Explicit `?libav=` and `?libavThreads=` remain.
+- Audio/video track switching rebuilds the pipeline at the current position;
+  multi-audio and multi-video browser tests pass.
+- `packages/storage` now persists global settings, history, playlist, bookmarks
+  and presets in IndexedDB; the UI has a media-library drawer, light/system
+  theme, playlist loop and autoplay controls.
+- `packages/host` owns the browser HostPort; `packages/agent-sdk` provides a
+  typed in-process client over the action registry.
+- Picture pipeline adds hue, rotation, crop (engine contract), sharpness,
+  nearest/bilinear scaling; audio adds gain with clipping protection and balance.
+- H.264 Matroska extradata is normalized to avcC for WebCodecs; the embedded
+  subtitle stream schema bug is fixed. H.264 MKV is validated through the
+  custom WASM decoder; the WebCodecs MKV path still intermittently raises a
+  Chrome `Decoding error` (about 20% locally), so it is not a stable path yet.
+- Source read failures now release the pending AVIO read and surface a typed
+  source error instead of hanging the demux worker.
+- Verification: 83 unit tests; 16 browser tests (one MT fixme, one conditional
+  skip). The threaded artifact still fails with
+  `AVFormatContext_nb_streams is not a function` when loaded in a Worker; it is
+  not a runtime-supported path yet.
+
 ## 1. Short conclusion
 
 P0 的功能面已经走通：核心架构、WebCodecs/WebGL2/AudioWorklet、真实浏览器播放、
@@ -46,11 +72,11 @@ P1 的产品化缺口最大：多轨切换、内嵌字幕/字体、存储持久�
 | --- | --- | --- |
 | 1080p30 10 分钟、2 小时长稳、进程内存、GPU context loss | 未执行；headless SwiftShader 不是有效门禁 | 在物理 GPU 基准机跑 `tests/perf` 并归档 `docs/reports/performance-*`/`soak-*` |
 | 真实 >4 GiB 实片 | 只有 5 GiB 稀疏扩展 MP4；不能证明长时长/尾索引真实媒体 | 外部环境准备 >4 GiB 实片，记录读取、seek、常驻内存曲线 |
-| 自动变体选择 | 默认预构建变体无法打开 AVI；必须手动 `?libav=wasm-player-p0` | 先按容器/扩展名或 probe 失败自动加载自定义变体并重试；保持 `decodePath` 报告准确 |
+| 自动变体选择 | 完成：旧容器扩展名自动选择自定义变体；probe 失败时回退；e2e 覆盖 | 保持扩展名/能力清单随格式包更新 |
 | 功能包拆分/按需加载 | 当前单体 wasm ~3.9 MB ST / ~4.1 MB MT | 拆 `demux-common`/`decode-audio-common`/`decode-video-common`，跨实例只传序列化包/帧，按需加载 |
-| MT 运行时 | MT 产物与 manifest 已生成；浏览器仍用 ST | 在 COOP/COEP+SAB 环境验证 MT 加载、吞吐、worker 数、回退 |
+| MT 运行时 | 已接入 `?libavThreads=mt`，但 `.thr.mjs` 在 Worker 中报 `AVFormatContext_nb_streams is not a function`；测试 fixme | 修 libav.js 6.8.8 MT 构建/加载或换构建方式后再启用 |
 | 运行时故障注入 | 100 次开关/无效媒体已测；解码器崩溃、GPU context loss、Worker 中断、后台恢复未测 | 加故障注入 e2e；验证 epoch 丢弃、重建、错误码与资源释放 |
-| AVIO 读失败解阻塞 | `onblockread` 读失败只记录 `lastSourceError`，未向 FFmpeg 发送终止信号，可能挂起 | 设计有界读超时/EOF 错误路径，并在 HTTP/File 故障注入中验证 |
+| AVIO 读失败解阻塞 | 已发送空块并消费 `lastSourceError`；仍需读超时和 HTTP 故障注入 e2e | 增加读超时/取消测试 |
 | 可复现/许可构建 | emsdk 记录 6.0.13 但无固定工具链镜像；未设 `SOURCE_DATE_EPOCH`；自定义 FFmpeg 含专利编码 | 固定 emsdk commit/镜像、源码哈希、可复现构建、SBOM、LGPL source offer、codec 专利评审 |
 | 真实 >4 GiB 内存曲线 | 未记录 WASM heap/纹理/网络缓存/Worker 峰值 | 插桩记账并按 2.6 预算复核 256 MiB 目标 |
 
@@ -58,36 +84,35 @@ P1 的产品化缺口最大：多轨切换、内嵌字幕/字体、存储持久�
 
 ### 4.1 媒体与轨道
 
-- **视频/音频切轨**：`selectTrack` 对非字幕轨仍返回 `UNSUPPORTED`；需要重建对应
-  decoder/clock/queue，保留位置与兼容设置，并发布 `decodePathChanged`。
-- **内嵌字幕**：demux/probe 能列出字幕 stream，但没有提取 subtitle packet/ASS
-  内容；需要 FFmpeg subtitle packet 输出、文本/位图分流、字体附件。
+- **视频/音频切轨**：已通过保留 source/position 重建管线实现；后续可优化为
+  decoder-only 重建，减少重新 probe 的延迟。
+- **内嵌字幕**：demux/probe 能列出字幕 stream（schema 已修复），但没有提取
+  subtitle packet/ASS 内容；需要 FFmpeg subtitle packet 输出、文本/位图分流、字体附件。
 - **字体**：JASSUB 当前用默认 Liberation Sans + 外挂 ASS；MKV 附件字体、用户导入
   字体、字体缺失回退与编码选择未实现。
 - **章节/附件**：`chapters` 恒为空；附件只有元数据，无内容读取/字体提取。
-- **WebM VP9/Opus**：probe/route 已验证；缺少浏览器播放 e2e 和 WebCodecs 不支持时
+- **WebM VP9/Opus**：probe/route 与多视频轨 e2e 已验证；缺少 WebCodecs 不支持时
   的 WASM 回退（自定义变体只有 VP8/VP9/AV1 parser，无 decoder）。
+- **H.264 MKV WebCodecs**：可解码但 Chrome 偶发 `Decoding error`；当前 e2e 走自定义
+  WASM。需要运行时按轨回退到 WASM，而不是把整个会话置为 error。
 - **HTTP 无 Range**：仅 Node 单测；需要浏览器 e2e、整片下载缓存选项、短读/取消。
 - **sourceId/授权源**：纯 Web 不支持；Companion 才做 sourceId→URL 转换；File System
   Access / 目录句柄 / 权限恢复未实现。
 
 ### 4.2 存储与列表
 
-- `storage` 包为空。需要 IndexedDB 版本化设置/历史/书签/列表/预设，OPFS 可选缓存，
-  迁移/回滚，媒体身份（大小+修改时间+局部摘要），File 句柄权限恢复。
-- 当前 `history` 只在内存且 `positionUs` 固定为 0；需要播放中/关闭时更新续播位置、
-  完成标记。
-- 播放列表、书签、预设仅内存；刷新即丢。UI 也没有列表/历史/书签面板。
-- `playback.loop` 只实现单文件循环；列表循环未实现。
+- `storage` 已实现 IndexedDB v1（设置/历史/书签/列表/预设）；仍需版本迁移、
+  OPFS 缓存、媒体身份（大小+修改时间+局部摘要）和 File 句柄权限恢复。
+- 历史位置已在播放中/关闭时更新；本地 File 历史仍不可直接重开。
+- 媒体库抽屉已接入列表/历史/书签；播放列表只持久化 URL/sourceId，File 不入库。
+- 单文件与列表循环均已实现。
 
 ### 4.3 UI/宿主
 
-- 主题：`app.theme` 被记录为 applied，但界面始终深色；light/system/reduced-motion
-  没有实际生效。
+- 主题/减少动态效果已生效；媒体库与播放列表循环已接入。
 - 缺少 Ctrl+K 命令面板、快捷键配置、设置搜索/预设/高级分组、逐层恢复展示。
-- 缺少列表/历史/书签 UI、当前值/单位/默认值/来源层的完整设置 UI。
-- `playback.autoPlay` 存了但 UI 打开文件始终 `autoPlay:false`；`volumeStep` 未用于
-  键盘音量。
+- 设置 UI 已覆盖基础项与新增画面/音频项，仍缺逐层来源/默认值/单位的完整展示。
+- `playback.autoPlay` 与 `playback.volumeStep` 已接入。
 - Host Port：fullscreen 可用；PiP 对 WebGL canvas 不支持（没有 `<video>`）；
   saveFile/pickFiles 未统一；File System Access 未接入。
 - PWA/service worker、离线 codec 包缓存、安装清单未实现。
@@ -113,10 +138,10 @@ P1 的产品化缺口最大：多轨切换、内嵌字幕/字体、存储持久�
 
 ## 5. P2 核心高级能力
 
-- 画面：hue/色温/RGB 增益、旋转/翻转/裁切/平移/缩放、最近邻/双线性/高质量缩放、
-  锐化；明确的 YUV range/matrix/transfer/primaries 契约；截图含 ASS/OSD 的合成。
-- 音频：10 段 EQ、平衡、单/双声道、混音、延迟、增益/防削波、保留音调变速
-  （LGPL atempo/Web Audio）、输出设备选择。
+- 画面：hue/旋转/裁切/锐化/缩放模式已实现；仍缺色温/RGB 增益、翻转/平移、
+  明确的 YUV range/matrix/transfer/primaries 契约；截图含 ASS/OSD 合成。
+- 音频：平衡、增益/削波保护已实现；仍缺 10 段 EQ、单/双声道、混音、延迟、
+  保留音调变速（LGPL atempo/Web Audio）、输出设备选择。
 - 字幕：主副双字幕、ASS 强制覆盖、字体管理；ASS 字体附件。
 - 播放：A-B 循环、章节、暂停向前逐帧；反向逐帧延后到 P3。
 - 任务/配置：截图/导出任务结果可通过 SDK/MCP 取回；预设、配置导入导出、命令面板、
