@@ -9,6 +9,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@soundtouchjs/audio-worklet": "2.1.1",
     "@wasm-player/contracts": "workspace:*"
   }
 }

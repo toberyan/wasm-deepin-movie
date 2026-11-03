@@ -97,6 +97,22 @@ async function handle(request: DemuxRequest): Promise<void> {
         scope.postMessage({ type: "result", requestId: request.requestId, ok: true, value });
         return;
       }
+      case "extract-subtitles": {
+        const value = await session.extractSubtitles(request.streamIndexes);
+        scope.postMessage(
+          { type: "result", requestId: request.requestId, ok: true, value },
+          value.flatMap((result) => result.packets.map((packet) => packet.data))
+        );
+        return;
+      }
+      case "extract-attachments": {
+        const value = await session.extractAttachments();
+        scope.postMessage(
+          { type: "result", requestId: request.requestId, ok: true, value },
+          value.map((attachment) => attachment.data)
+        );
+        return;
+      }
       case "seek": {
         const value = await session.seek(request.positionUs);
         scope.postMessage(

@@ -19,6 +19,8 @@ import type {
   ReadResult,
   SeekResult,
   StreamRouteCandidate,
+  SubtitleExtractResult,
+  AttachmentExtractResult,
   VideoCodecConfig,
   WasmAudioChunk,
   WasmVideoFrame,
@@ -273,7 +275,7 @@ export class DemuxSession {
       libav.onblockread = (name, position, length) => {
         void this.handleBlockRead(name, position, length);
       };
-      const [fmt, streams] = await libav.ff_init_demuxer_file("input");
+      const [fmt, streams] = await this.initDemuxerFile(libav);
       this.fmt = fmt;
       this.streams = streams;
       this.streamByIndex = new Map(streams.map((stream) => [stream.index, stream]));
@@ -400,6 +402,99 @@ export class DemuxSession {
     return configured;
   }
 
+  async extractAttachments(): Promise<AttachmentExtractResult[]> {
+    const libav = this.requireLibav();
+    const attachments: AttachmentExtractResult[] = [];
+    for (const stream of this.streams) {
+      if (streamType(stream.codec_type) !== "data") continue;
+      const filename = stream.metadata?.filename;
+      if (!filename) continue;
+      const codecpar = await libav.ff_copyout_codecpar(stream.codecpar);
+      if (!codecpar.extradata || codecpar.extradata.byteLength === 0) continue;
+      attachments.push({
+        filename,
+        ...(stream.metadata?.mimetype ? { mimeType: stream.metadata.mimetype } : {}),
+        data: codecpar.extradata.slice().buffer as ArrayBuffer
+      });
+    }
+    return attachments;
+  }
+
+  async extractSubtitles(streamIndexes: number[]): Promise<SubtitleExtractResult[]> {
+    const libav = this.requireLibav();
+    if (this.fmt === 0 || this.pkt === 0) throw new PlayerError("NEEDS_MEDIA", "no media is open");
+    const targets = streamIndexes
+      .map((index) => this.streamByIndex.get(index))
+      .filter((stream): stream is LibAVJS.Stream => stream !== undefined && streamType(stream.codec_type) === "subtitle");
+    if (targets.length === 0) return [];
+    const results = new Map<number, SubtitleExtractResult>();
+    for (const stream of targets) {
+      const codecpar = await libav.ff_copyout_codecpar(stream.codecpar);
+      const codec = await libav.avcodec_get_name(codecpar.codec_id);
+      const result: SubtitleExtractResult = {
+        streamIndex: stream.index,
+        codec,
+        packets: []
+      };
+      if (codecpar.extradata && codecpar.extradata.byteLength > 0) {
+        result.extradata = codecpar.extradata.slice().buffer as ArrayBuffer;
+      }
+      results.set(stream.index, result);
+    }
+    const anchor = targets.find((stream) => streamType(stream.codec_type) === "subtitle")!;
+    const [lo, hi] = LibAV.f64toi64(0);
+    try {
+      await libav.av_seek_frame(this.fmt, anchor.index, lo, hi, AVSEEK_FLAGS.backward);
+      await libav.avformat_flush(this.fmt);
+      let eof = false;
+      let bytes = 0;
+      let iterations = 0;
+      while (!eof && bytes < 8 * 1024 * 1024 && iterations < 20_000) {
+        iterations += 1;
+        const [ret, packetsByStream] = await libav.ff_read_frame_multi(this.fmt, this.pkt, {
+          limit: 1024 * 1024
+        });
+        for (const [streamIndex, streamPackets] of Object.entries(packetsByStream)) {
+          const result = results.get(Number(streamIndex));
+          if (!result) continue;
+          const stream = this.streamByIndex.get(Number(streamIndex));
+          if (!stream) continue;
+          for (const packet of streamPackets) {
+            const data = packet.data.slice();
+            result.packets.push({
+              data: data.buffer as ArrayBuffer,
+              ptsUs: timeUs(
+                this.libavWrapper,
+                packet.pts,
+                packet.ptshi,
+                stream.time_base_num,
+                stream.time_base_den
+              ),
+              durationUs: timeUs(
+                this.libavWrapper,
+                packet.duration,
+                packet.durationhi,
+                stream.time_base_num,
+                stream.time_base_den
+              )
+            });
+            bytes += data.byteLength;
+          }
+        }
+        if (ret === libav.AVERROR_EOF) eof = true;
+        else if (ret === -libav.EAGAIN) await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      return [...results.values()];
+    } finally {
+      try {
+        await libav.av_seek_frame(this.fmt, anchor.index, lo, hi, AVSEEK_FLAGS.backward);
+        await libav.avformat_flush(this.fmt);
+      } catch {
+        // The caller will surface the original extraction error.
+      }
+    }
+  }
+
   async seek(positionUs: number): Promise<SeekResult> {
     const libav = this.requireLibav();
     if (this.fmt === 0) throw new PlayerError("NEEDS_MEDIA", "no media is open");
@@ -511,6 +606,46 @@ export class DemuxSession {
       return reader;
     }
     throw new PlayerError("UNSUPPORTED", "sourceId requires an authorized host broker");
+  }
+
+  private async initDemuxerFile(
+    libav: LibAVInstance
+  ): Promise<[number, LibAVJS.Stream[]]> {
+    if (this.libavThreads !== "mt") {
+      return libav.ff_init_demuxer_file("input");
+    }
+    // libav.js 6.8.8's threaded build has a broken ff_init_demuxer_file
+    // closure: its local accessor variables are missing inside a Worker even
+    // though the instance methods exist. Build the same stream list using the
+    // public accessors instead of failing on AVFormatContext_nb_streams.
+    const fmt = await libav.avformat_open_input_js("input", 0, 0);
+    if (!fmt) throw new PlayerError("DECODE_FAILED", "could not open source file");
+    const info = await libav.avformat_find_stream_info(fmt, 0);
+    if (info < 0) throw new PlayerError("DECODE_FAILED", `stream info failed with code ${info}`);
+    const count = await libav.AVFormatContext_nb_streams(fmt);
+    const streams: LibAVJS.Stream[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const ptr = await libav.AVFormatContext_streams_a(fmt, index);
+      const codecpar = await libav.AVStream_codecpar(ptr);
+      const timeBaseNum = await libav.AVStream_time_base_num(ptr);
+      const timeBaseDen = await libav.AVStream_time_base_den(ptr);
+      const durationTicks =
+        (await libav.AVStream_duration(ptr)) +
+        (await libav.AVStream_durationhi(ptr)) * 4294967296;
+      const stream = {
+        ptr,
+        index,
+        codecpar,
+        codec_type: await libav.AVCodecParameters_codec_type(codecpar),
+        codec_id: await libav.AVCodecParameters_codec_id(codecpar),
+        time_base_num: timeBaseNum,
+        time_base_den: timeBaseDen,
+        duration_time_base: durationTicks,
+        duration: timeBaseNum ? (durationTicks * timeBaseNum) / timeBaseDen : 0
+      };
+      streams.push(stream as LibAVJS.Stream);
+    }
+    return [fmt, streams];
   }
 
   private handleBlockRead(name: string, position: number, length: number): void {

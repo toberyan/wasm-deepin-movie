@@ -150,3 +150,43 @@ describe("DemuxSession", () => {
     }
   }, 30_000);
 });
+
+describe("DemuxSession subtitle extraction", () => {
+  it("extracts embedded SubRip packets and restores the read position", async () => {
+    const source = await fileSource("sample-h264-aac-subs.mkv");
+    const session = new DemuxSession();
+    try {
+      const probe = await session.open({ kind: "file", file: source.file, name: source.name });
+      const subtitle = probe.tracks.find((track) => track.type === "subtitle");
+      expect(subtitle).toMatchObject({ codec: "subrip" });
+      const [result] = await session.extractSubtitles([subtitle!.index]);
+      expect(result?.codec).toBe("subrip");
+      expect(result?.packets.length).toBeGreaterThan(0);
+      const text = new TextDecoder().decode(
+        new Uint8Array(result!.packets[0]!.data)
+      );
+      expect(text).toContain("Hello WASM player");
+      const first = await session.read(128 * 1024, 8);
+      expect(first.packets.some((packet) => packet.streamType === "video")).toBe(true);
+    } finally {
+      await session.close();
+    }
+  });
+});
+
+describe("DemuxSession attachment extraction", () => {
+  it("extracts Matroska font attachments", async () => {
+    const source = await fileSource("sample-h264-aac-ass-font.mkv");
+    const session = new DemuxSession();
+    try {
+      const probe = await session.open({ kind: "file", file: source.file, name: source.name });
+      expect(probe.media.attachments[0]?.filename).toBe("NotoSansLycian-Regular.ttf");
+      const attachments = await session.extractAttachments();
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0]?.mimeType).toBe("font/ttf");
+      expect(attachments[0]?.data.byteLength).toBeGreaterThan(1000);
+    } finally {
+      await session.close();
+    }
+  });
+});

@@ -50,4 +50,15 @@ ffmpeg -hide_banner -loglevel error -y \
   -i "$out/sample-h264-aac.mp4" -i "$out/subtitle.srt" \
   -c copy -c:s srt -metadata:s:s:0 language=eng "$out/sample-h264-aac-subs.mkv"
 
+ffmpeg -hide_banner -loglevel error -y \
+  -i "$out/sample-h264-aac.mp4" -i "$out/subtitle.ass" \
+  -map 0 -map 1 -c copy -c:s ass -metadata:s:s:0 language=eng "$out/sample-h264-aac-ass.mkv"
+
+ffmpeg -hide_banner -loglevel error -y \
+  -i "$out/sample-h264-aac-ass.mkv" \
+  -attach tests/fixtures/fonts/NotoSansLycian-Regular.ttf \
+  -metadata:s:t:0 mimetype=font/ttf \
+  -metadata:s:t:0 filename=NotoSansLycian-Regular.ttf \
+  -c copy "$out/sample-h264-aac-ass-font.mkv"
+
 node scripts/generate-fixture-manifest.mjs

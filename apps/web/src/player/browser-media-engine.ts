@@ -43,6 +43,7 @@ import {
   DemuxWorkerClient,
   type DemuxPacket,
   type ProbeResult,
+  type SubtitleExtractResult,
   type WasmAudioChunk,
   type WasmVideoFrame
 } from "@wasm-player/ffmpeg-adapter";
@@ -189,13 +190,16 @@ export class BrowserMediaEngine implements MediaEngine {
   private assCanvas: HTMLCanvasElement;
   private assRenderer: JASSUB | null = null;
   private assTrackIndex: number | null = null;
-  private assFontData: Uint8Array | null = null;
+  private readonly assFonts: Uint8Array[] = [];
+  private defaultFontLoaded = false;
   private readonly resizeObserver: ResizeObserver | null;
   private readonly libavBase: string | undefined;
   private readonly libavVariant: string | undefined;
   private readonly libavThreads: "st" | "mt";
   private lastOpenRequest: OpenMediaRequest | null = null;
   private customVariantAvailable: boolean | null = null;
+  private fallbackInProgress = false;
+  private threadFallbackWarning: string | null = null;
   private libavVariantUsed: string | undefined;
   private readonly onLog: ((message: string, details?: unknown) => void) | undefined;
 
@@ -229,6 +233,7 @@ export class BrowserMediaEngine implements MediaEngine {
   private readonly clock = new MediaClock("monotonic");
   private readonly settings = new Map<SettingId, EffectiveValue>();
   private readonly subtitleTracks = new Map<number, SubtitleTrack>();
+  private readonly subtitleTexts = new Map<number, string>();
   private nextSubtitleIndex = 10_000;
 
   private epoch = 0;
@@ -276,6 +281,7 @@ export class BrowserMediaEngine implements MediaEngine {
     this.stats = { ...EMPTY_STATS };
     this.audioBufferedUs = 0;
     this.lastSubtitleText = "";
+    this.threadFallbackWarning = null;
     this.previewFramePending = true;
     this.epoch += 1;
     const epoch = this.epoch;
@@ -285,11 +291,14 @@ export class BrowserMediaEngine implements MediaEngine {
     const workerSource = toWorkerSource(request.source);
     this.lastOpenRequest = request;
     const name = mediaSourceName(request.source);
+    const forcedWasm = Object.values(request.forceDecodePath ?? {}).includes("wasm");
     const preferCustom =
+      request.preferCustomVariant === true ||
       this.libavVariant !== undefined ||
+      (forcedWasm && (await this.hasCustomVariant())) ||
       (isLegacyContainer(name) && (await this.hasCustomVariant()));
     let variant = preferCustom ? this.libavVariant ?? "wasm-player-p0" : undefined;
-    let probe: ProbeResult;
+    let probe!: ProbeResult;
     let demux = this.createDemuxClient();
     this.demux = demux;
     try {
@@ -300,28 +309,49 @@ export class BrowserMediaEngine implements MediaEngine {
         libavThreads: this.libavThreads
       });
     } catch (firstError) {
-      const canFallback =
-        variant === undefined &&
-        this.libavVariant === undefined &&
-        (await this.hasCustomVariant());
-      if (!canFallback) {
-        await this.close();
-        throw firstError;
+      let recovered = false;
+      if (this.libavThreads === "mt") {
+        await demux.close().catch(() => demux.terminate());
+        demux = this.createDemuxClient();
+        this.demux = demux;
+        try {
+          probe = await demux.open(workerSource as Parameters<DemuxWorkerClient["open"]>[0], {
+            name,
+            ...(this.libavBase ? { libavBase: this.libavBase } : {}),
+            ...(variant ? { libavVariant: variant } : {}),
+            libavThreads: "st"
+          });
+          this.threadFallbackWarning =
+            "threaded libav runtime failed; fell back to the single-threaded build";
+          recovered = true;
+        } catch {
+          // Fall through to the variant fallback below.
+        }
       }
-      await demux.close().catch(() => demux.terminate());
-      demux = this.createDemuxClient();
-      this.demux = demux;
-      variant = "wasm-player-p0";
-      try {
-        probe = await demux.open(workerSource as Parameters<DemuxWorkerClient["open"]>[0], {
-          name,
-          ...(this.libavBase ? { libavBase: this.libavBase } : {}),
-          libavVariant: variant,
-          libavThreads: this.libavThreads
-        });
-      } catch (secondError) {
-        await this.close();
-        throw secondError;
+      if (!recovered) {
+        const canFallback =
+          variant === undefined &&
+          this.libavVariant === undefined &&
+          (await this.hasCustomVariant());
+        if (!canFallback) {
+          await this.close();
+          throw firstError;
+        }
+        await demux.close().catch(() => demux.terminate());
+        demux = this.createDemuxClient();
+        this.demux = demux;
+        variant = "wasm-player-p0";
+        try {
+          probe = await demux.open(workerSource as Parameters<DemuxWorkerClient["open"]>[0], {
+            name,
+            ...(this.libavBase ? { libavBase: this.libavBase } : {}),
+            libavVariant: variant,
+            libavThreads: "st"
+          });
+        } catch (secondError) {
+          await this.close();
+          throw secondError;
+        }
       }
     }
     this.libavVariantUsed = variant;
@@ -330,6 +360,7 @@ export class BrowserMediaEngine implements MediaEngine {
       this.media = structuredClone(probe.media);
       this.durationUs = probe.media.durationUs;
       this.warnings = [...probe.warnings];
+      if (this.threadFallbackWarning) this.warnings.push(this.threadFallbackWarning);
       this.capabilities = this.detectCapabilities();
 
       const support: Record<string, CodecSupport> = {};
@@ -488,6 +519,20 @@ export class BrowserMediaEngine implements MediaEngine {
             audioOutput.setVolume(this.volume, this.muted);
             audioOutput.setGainDb(this.settingValue("audio.gainDb", 0));
             audioOutput.setBalance(this.settingValue("audio.balance", 0));
+            audioOutput.setEqualizer(
+              this.settingValue<number[]>("audio.eq", Array.from({ length: 10 }, () => 0))
+            );
+            audioOutput.setDelayMs(this.settingValue("audio.delayMs", 0));
+            const deviceId = this.settingValue("audio.deviceId", "");
+            if (deviceId) {
+              await audioOutput.setDevice(deviceId).catch((error: unknown) => {
+                this.warnings.push(
+                  `audio output device could not be selected: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                );
+              });
+            }
             audioOutput.setRate(this.rate);
             this.audioOutput = audioOutput;
           } catch (error) {
@@ -521,6 +566,8 @@ export class BrowserMediaEngine implements MediaEngine {
       } else {
         this.seekTargetUs = 0;
       }
+      await this.loadAttachments();
+      await this.loadEmbeddedSubtitles(probe);
       this.startPump();
       if (videoTrack) await this.waitForFirstFrame(7000);
       if (request.autoPlay) await this.play();
@@ -577,6 +624,9 @@ export class BrowserMediaEngine implements MediaEngine {
     this.decoderFlushed = false;
     this.error = null;
     await this.destroyAssRenderer();
+    this.clearVideoQueue();
+    this.stats.videoQueueFrames = 0;
+    this.stats.videoQueueBytes = 0;
     this.emit({ type: "mediaClosed" });
     this.emit({ type: "phase", phase: "idle", previous: "ready" });
   }
@@ -742,8 +792,16 @@ export class BrowserMediaEngine implements MediaEngine {
   async selectTrack(type: TrackType, index: number): Promise<TrackInfo[]> {
     this.requireMedia();
     if (type === "subtitle") {
-      if (!this.subtitleTracks.has(index)) {
+      const subtitleTrack = this.subtitleTracks.get(index);
+      if (!subtitleTrack) {
         throw new PlayerError("UNSUPPORTED", `subtitle track ${index} is not loaded`);
+      }
+      if (
+        (subtitleTrack.format === "ass" || subtitleTrack.format === "ssa") &&
+        this.assTrackIndex !== index
+      ) {
+        const text = this.subtitleTexts.get(index);
+        if (text) await this.installAssRenderer(index, text);
       }
       this.selected.subtitle = index;
       this.lastSubtitleText = "";
@@ -801,40 +859,14 @@ export class BrowserMediaEngine implements MediaEngine {
     }
     const decoded = decodeSubtitleBytes(bytes, input.encoding);
     const parsed = parseSubtitles(decoded.text, input.format ?? "auto");
+    const index = input.trackIndex ?? this.nextSubtitleIndex;
+    if (input.trackIndex === undefined) this.nextSubtitleIndex += 1;
+    const activate = input.activate ?? true;
     const track = new SubtitleTrack(parsed);
-    const index = this.nextSubtitleIndex;
-    this.nextSubtitleIndex += 1;
     this.subtitleTracks.set(index, track);
-    if (parsed.format === "ass" || parsed.format === "ssa") {
-      try {
-        await this.destroyAssRenderer();
-        if (!this.assFontData) {
-          const fontResponse = await fetch(jassubDefaultFontUrl);
-          if (fontResponse.ok) {
-            this.assFontData = new Uint8Array(await fontResponse.arrayBuffer());
-          }
-        }
-        const renderer = new JASSUB({
-          canvas: this.assCanvas,
-          subContent: decoded.text,
-          workerUrl: jassubWorkerUrl,
-          wasmUrl: jassubWasmUrl,
-          modernWasmUrl: jassubModernWasmUrl,
-          fonts: this.assFontData ? [this.assFontData] : [],
-          availableFonts: { "liberation sans": jassubDefaultFontUrl },
-          defaultFont: "liberation sans",
-          queryFonts: false,
-          debug: false,
-          prescaleFactor: 1
-        });
-        await renderer.ready;
-        this.assRenderer = renderer;
-        this.assTrackIndex = index;
-      } catch (error) {
-        this.warnings.push(
-          `ASS renderer unavailable: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
+    this.subtitleTexts.set(index, decoded.text);
+    if (activate && (parsed.format === "ass" || parsed.format === "ssa")) {
+      await this.installAssRenderer(index, decoded.text);
     }
     const name = input.name ?? `External ${parsed.format.toUpperCase()}`;
     const language = decoded.encoding;
@@ -848,8 +880,21 @@ export class BrowserMediaEngine implements MediaEngine {
       default: false,
       forced: false,
       id: `subtitle:${index}`,
-      selected: true
+      selected: activate
     };
+    const existingTrack = this.tracks.some((candidate) => candidate.type === "subtitle" && candidate.index === index);
+    if (existingTrack) {
+      this.tracks = this.tracks.map((candidate) => {
+        if (candidate.type !== "subtitle") return candidate;
+        if (candidate.index === index) return { ...candidate, ...trackInfo };
+        return activate ? { ...candidate, selected: false } : candidate;
+      });
+    } else {
+      this.tracks = [
+        ...this.tracks.map((candidate) => ({ ...candidate, selected: activate ? false : candidate.selected })),
+        trackInfo
+      ];
+    }
     if (this.media) {
       const streamInfo: MediaStreamInfo = {
         index,
@@ -861,16 +906,21 @@ export class BrowserMediaEngine implements MediaEngine {
         default: false,
         forced: false
       };
-      this.media.streams = [...this.media.streams, streamInfo];
+      const streamIndex = this.media.streams.findIndex((stream) => stream.index === index);
+      if (streamIndex >= 0) {
+        this.media.streams = this.media.streams.map((stream, current) =>
+          current === streamIndex ? { ...stream, ...streamInfo } : stream
+        );
+      } else {
+        this.media.streams = [...this.media.streams, streamInfo];
+      }
     }
-    this.tracks = [
-      ...this.tracks.map((candidate) => ({ ...candidate, selected: false })),
-      trackInfo
-    ];
-    this.selected.subtitle = index;
-    this.lastSubtitleText = "";
-    if (parsed.format !== "ass" && parsed.format !== "ssa") {
-      await this.destroyAssRenderer();
+    if (activate) {
+      this.selected.subtitle = index;
+      this.lastSubtitleText = "";
+      if (parsed.format !== "ass" && parsed.format !== "ssa") {
+        await this.destroyAssRenderer();
+      }
     }
     this.warnings.push(...decoded.warnings, ...parsed.warnings);
     this.emit({
@@ -879,6 +929,98 @@ export class BrowserMediaEngine implements MediaEngine {
       selected: { ...this.selected }
     });
     return this.tracks;
+  }
+
+  private async installAssRenderer(index: number, text: string): Promise<void> {
+    try {
+      await this.destroyAssRenderer();
+      if (!this.defaultFontLoaded) {
+        this.defaultFontLoaded = true;
+        const fontResponse = await fetch(jassubDefaultFontUrl);
+        if (fontResponse.ok) {
+          this.assFonts.push(new Uint8Array(await fontResponse.arrayBuffer()));
+        }
+      }
+      const renderer = new JASSUB({
+        canvas: this.assCanvas,
+        subContent: text,
+        workerUrl: jassubWorkerUrl,
+        wasmUrl: jassubWasmUrl,
+        modernWasmUrl: jassubModernWasmUrl,
+        fonts: this.assFonts,
+        availableFonts: { "liberation sans": jassubDefaultFontUrl },
+        defaultFont: "liberation sans",
+        queryFonts: false,
+        debug: false,
+        prescaleFactor: 1
+      });
+      await renderer.ready;
+      this.assRenderer = renderer;
+      this.assTrackIndex = index;
+    } catch (error) {
+      this.warnings.push(
+        `ASS renderer unavailable: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  private async loadAttachments(): Promise<void> {
+    if (!this.demux) return;
+    try {
+      const attachments = await this.demux.extractAttachments();
+      for (const attachment of attachments) {
+        const extension = attachment.filename.toLowerCase().split(".").pop() ?? "";
+        const mime = attachment.mimeType?.toLowerCase() ?? "";
+        if (
+          !mime.startsWith("font/") &&
+          !["ttf", "otf", "woff", "woff2"].includes(extension)
+        ) {
+          continue;
+        }
+        this.assFonts.push(new Uint8Array(attachment.data));
+      }
+    } catch (error) {
+      this.warnings.push(
+        `attachment extraction failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  private async loadEmbeddedSubtitles(probe: ProbeResult): Promise<void> {
+    const supported = new Set(["subrip", "srt", "ass", "ssa", "webvtt", "mov_text"]);
+    const indexes = probe.tracks
+      .filter((track) => track.type === "subtitle" && supported.has(track.codec))
+      .map((track) => track.index);
+    if (indexes.length === 0 || !this.demux) return;
+    let extracted: SubtitleExtractResult[];
+    try {
+      extracted = await this.demux.extractSubtitles(indexes);
+    } catch (error) {
+      this.warnings.push(
+        `embedded subtitle extraction failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return;
+    }
+    let activated = this.selected.subtitle !== null;
+    for (const result of extracted) {
+      const text = buildEmbeddedSubtitle(result);
+      if (!text) continue;
+      const track = probe.tracks.find((candidate) => candidate.index === result.streamIndex);
+      try {
+        await this.loadSubtitle({
+          text,
+          name: track?.title ?? `Embedded ${result.codec.toUpperCase()}`,
+          format: "auto",
+          trackIndex: result.streamIndex,
+          activate: !activated
+        });
+        activated = true;
+      } catch (error) {
+        this.warnings.push(
+          `embedded subtitle ${result.streamIndex} failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
   }
 
   async applySettings(
@@ -1077,8 +1219,25 @@ export class BrowserMediaEngine implements MediaEngine {
         this.audioOutput?.setBalance(requested as number);
         return applied();
       }
-      case "audio.delayMs":
-        return unsupported("audio delay is P2");
+      case "audio.eq": {
+        this.audioOutput?.setEqualizer(requested as number[]);
+        return applied();
+      }
+      case "audio.deviceId": {
+        if (!this.audioOutput) return applied();
+        try {
+          await this.audioOutput.setDevice(requested as string);
+          return applied();
+        } catch (error) {
+          return unsupported(
+            error instanceof Error ? error.message : "audio output device selection failed"
+          );
+        }
+      }
+      case "audio.delayMs": {
+        this.audioOutput?.setDelayMs(requested as number);
+        return applied();
+      }
       default:
         return unsupported("not implemented by the browser engine");
     }
@@ -1286,12 +1445,57 @@ export class BrowserMediaEngine implements MediaEngine {
 
   private onDecodeError(error: PlayerError, epoch: number, track: "video" | "audio"): void {
     if (epoch !== this.epoch || this.closed) return;
+    if (this.fallbackInProgress) return;
+    if (track === "video" && !this.videoWasm) {
+      void this.fallbackVideoToWasm(error);
+      return;
+    }
     this.onEngineError(
       new PlayerError(error.code, error.message, {
         recoverable: error.recoverable,
         details: { ...(error.details ?? {}), track }
       })
     );
+  }
+
+  private async fallbackVideoToWasm(originalError: PlayerError): Promise<void> {
+    const request = this.lastOpenRequest;
+    if (!request || !(await this.hasCustomVariant())) {
+      this.onEngineError(originalError);
+      return;
+    }
+    this.fallbackInProgress = true;
+    const wasPlaying = this.phase === "playing";
+    const positionUs = this.currentMediaTime(nowSeconds());
+    const selected = { ...this.selected };
+    try {
+      await this.open({
+        ...request,
+        preferCustomVariant: true,
+        forceDecodePath: { ...request.forceDecodePath, video: "wasm" },
+        preferredTracks: {
+          ...request.preferredTracks,
+          ...(selected.video !== null ? { video: selected.video } : {}),
+          ...(selected.audio !== null ? { audio: selected.audio } : {})
+        },
+        startPositionUs: positionUs,
+        autoPlay: wasPlaying
+      });
+      this.warnings.push("video WebCodecs failed; switched to the custom WASM decoder");
+    } catch (fallbackError) {
+      this.onEngineError(
+        new PlayerError(originalError.code, originalError.message, {
+          recoverable: originalError.recoverable,
+          details: {
+            ...(originalError.details ?? {}),
+            track: "video",
+            fallbackError: fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+          }
+        })
+      );
+    } finally {
+      this.fallbackInProgress = false;
+    }
   }
 
   private onEngineError(error: unknown): void {
@@ -1594,4 +1798,99 @@ export class BrowserMediaEngine implements MediaEngine {
   private emit(event: EngineEvent): void {
     for (const listener of this.listeners) listener(event);
   }
+}
+
+function buildEmbeddedSubtitle(result: SubtitleExtractResult): string | null {
+  const decode = (data: ArrayBuffer): string =>
+    new TextDecoder("utf-8").decode(new Uint8Array(data)).split("\u0000").join("").trim();
+  const codec = result.codec.toLowerCase();
+  if (codec === "ass" || codec === "ssa") {
+    const header = result.extradata ? decode(result.extradata) : "";
+    let script = header;
+    if (!script.includes("[Script Info]")) {
+      script =
+        `[Script Info]\nScriptType: v4.00+\nPlayResX: 384\nPlayResY: 216\n\n` +
+        `[V4+ Styles]\n` +
+        `Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
+        `Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n\n` +
+        script;
+    }
+    if (!script.includes("[Events]")) {
+      script += `\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+    } else if (!/\[Events\][\s\S]*?Format:/.test(script)) {
+      script += `\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+    }
+    const lines: string[] = [];
+    result.packets.forEach((packet, index) => {
+      const text = decode(packet.data);
+      if (!text) return;
+      if (text.startsWith("Dialogue:")) {
+        lines.push(text);
+        return;
+      }
+      const next = result.packets[index + 1]?.ptsUs;
+      const duration = packet.durationUs > 0 ? packet.durationUs : next ? next - packet.ptsUs : 2_000_000;
+      lines.push(
+        `Dialogue: 0,${formatAssTime(packet.ptsUs)},${formatAssTime(packet.ptsUs + duration)},Default,,0,0,0,,${text.replace(/\r?\n/g, "\\N")}`
+      );
+    });
+    if (lines.length === 0) return null;
+    return `${script.trimEnd()}\n${lines.join("\n")}\n`;
+  }
+
+  const wantsVtt = codec === "webvtt";
+  const cues: string[] = [];
+  result.packets.forEach((packet, index) => {
+    const text = decode(packet.data);
+    if (!text) return;
+    const next = result.packets[index + 1]?.ptsUs;
+    const duration = packet.durationUs > 0 ? packet.durationUs : next ? next - packet.ptsUs : 2_000_000;
+    const start = packet.ptsUs;
+    const end = Math.max(start + 1, start + duration);
+    cues.push(
+      `${wantsVtt ? formatVttTime(start) : formatSrtTime(start)} --> ${
+        wantsVtt ? formatVttTime(end) : formatSrtTime(end)
+      }\n${text}`
+    );
+  });
+  if (cues.length === 0) return null;
+  if (wantsVtt) return `WEBVTT\n\n${cues.join("\n\n")}\n`;
+  return `${cues.map((cue, index) => `${index + 1}\n${cue}`).join("\n\n")}\n`;
+}
+
+function formatSrtTime(us: number): string {
+  const total = Math.max(0, Math.round(us / 1000));
+  const hours = Math.floor(total / 3_600_000);
+  const minutes = Math.floor((total % 3_600_000) / 60_000);
+  const seconds = Math.floor((total % 60_000) / 1000);
+  const millis = total % 1000;
+  return `${hours.toString().padStart(2, "0")}:${minutes
+    .toString()
+    .padStart(2, "0")}:${seconds.toString().padStart(2, "0")},${millis
+    .toString()
+    .padStart(3, "0")}`;
+}
+
+function formatVttTime(us: number): string {
+  const total = Math.max(0, Math.round(us / 1000));
+  const hours = Math.floor(total / 3_600_000);
+  const minutes = Math.floor((total % 3_600_000) / 60_000);
+  const seconds = Math.floor((total % 60_000) / 1000);
+  const millis = total % 1000;
+  return `${hours.toString().padStart(2, "0")}:${minutes
+    .toString()
+    .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}.${millis
+    .toString()
+    .padStart(3, "0")}`;
+}
+
+function formatAssTime(us: number): string {
+  const total = Math.max(0, Math.round(us / 10_000));
+  const hours = Math.floor(total / 360_000);
+  const minutes = Math.floor((total % 360_000) / 6000);
+  const seconds = Math.floor((total % 6000) / 100);
+  const centis = total % 100;
+  return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds
+    .toString()
+    .padStart(2, "0")}.${centis.toString().padStart(2, "0")}`;
 }

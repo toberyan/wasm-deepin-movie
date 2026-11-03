@@ -70,6 +70,25 @@ export interface WasmAudioChunk {
   channels: ArrayBuffer[];
 }
 
+export interface SubtitlePacket {
+  data: ArrayBuffer;
+  ptsUs: number;
+  durationUs: number;
+}
+
+export interface AttachmentExtractResult {
+  filename: string;
+  mimeType?: string;
+  data: ArrayBuffer;
+}
+
+export interface SubtitleExtractResult {
+  streamIndex: number;
+  codec: string;
+  extradata?: ArrayBuffer;
+  packets: SubtitlePacket[];
+}
+
 export interface ReadResult {
   packets: DemuxPacket[];
   bytes: number;
@@ -123,6 +142,15 @@ export type DemuxRequest =
       type: "configure-wasm";
       requestId: number;
       streamIndexes: number[];
+    }
+  | {
+      type: "extract-subtitles";
+      requestId: number;
+      streamIndexes: number[];
+    }
+  | {
+      type: "extract-attachments";
+      requestId: number;
     }
   | {
       type: "close";

@@ -118,32 +118,42 @@ Not yet delivered:
 
 - Physical-GPU 1080p30 10-minute/2-hour soak, process-memory evidence and a real
   >4 GiB movie (sparse-extension only so far).
-- `demux-common`/`decode-*` on-demand package split; MT runtime is blocked by a
-  libav.js threaded artifact error (`AVFormatContext_nb_streams` in a Worker).
-- Embedded subtitle packet extraction and font attachments; PGS/VobSub.
-- H.264 Matroska WebCodecs is experimental in this Chrome build; the stable
-  H.264 MKV test uses the custom WASM decoder. Runtime per-track fallback is
-  still pending.
+- `demux-common`/`decode-*` on-demand package split.
+- True libav.js MT execution is blocked in the upstream 6.8.8 threaded build;
+  `?libavThreads=mt` now falls back to the ST artifact with a warning instead of
+  failing to open. The fallback is verified, but no real MT speedup is claimed.
+- PGS/VobSub bitmap subtitles; embedded text/ASS and font attachments are
+  extracted and rendered.
 - HDR/WebGPU, HLS/DASH, 10-bit/tone mapping; full compatibility matrix and
-  Windows/macOS runners; audio delay/EQ and device selection.
+  Windows/macOS runners.
+- H.264 Matroska WebCodecs remains flaky in this Chrome build; per-track runtime
+  fallback and an explicit force-WASM UI are implemented, but the WebCodecs MKV
+  path itself is still marked experimental.
 - Desktop shell (P4).
 
 ## Custom WASM fallback
 
 The project-owned variant adds AVI/MPEG-4/MP3 and H.264/HEVC/AAC/AC-3/FLAC/
-Opus decoder candidates:
+Opus decoder candidates. The ST artifacts are checked into
+`apps/web/public/libav`, so a fresh checkout can use them immediately:
+
+```bash
+pnpm install
+pnpm libav:sync   # copies the prebuilt webcodecs variant; keeps the checked-in ST variant
+pnpm dev
+```
+
+Rebuild only when changing the native fragment list or FFmpeg/libav.js:
 
 ```bash
 source ~/tools/emsdk/emsdk_env.sh
 pnpm wasm:build
 pnpm libav:sync
-pnpm dev
-# open http://127.0.0.1:5173/?libav=wasm-player-p0
 ```
 
 Legacy container extensions (`.avi`, `.flv`, `.ts`, `.mpg`, `.wmv`, `.rmvb`,
 raw `.mp3`/`.aac`) select the custom variant automatically. `?libav=wasm-player-p0`
-still forces it for any source, and `?libavThreads=mt` requests the threaded
-artifact (currently experimental; see the remaining-work report). The custom
-AVI and forced-WASM tests skip automatically when the artifacts are not built.
-See `docs/reports/wasm-build-2026-11-02.md`.
+still forces it for any source. `?libavThreads=mt` attempts the threaded
+artifact and transparently falls back to ST with a warning; true MT remains an
+upstream blocker. The custom AVI and forced-WASM tests run when the artifacts
+are present. See `docs/reports/wasm-build-2026-11-02.md`.

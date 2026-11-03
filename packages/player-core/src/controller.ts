@@ -1545,6 +1545,7 @@ export class PlayerController {
       case "mediaClosed": {
         this.media = null;
         this.tracks = [];
+        this.stats = this.engine.getSnapshot().stats;
         this.emitEvent("mediaClosed", {});
         break;
       }

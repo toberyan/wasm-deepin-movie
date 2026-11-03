@@ -14,6 +14,8 @@ release only after the license review in the development plan is complete.
 | Zod | 4.6.7 | MIT | Contracts and schema generation. |
 | System FFmpeg | 6.1.5-0deepin4 | GPL build | Used only for test fixture generation and reference output. It must not enter a distributed WASM build or product artifact. |
 | JASSUB | 2.5.23 | MIT | ASS/SSA rendering wrapper; bundles libass WASM. Libass is ISC-licensed; verify the bundled notice/source requirements before distribution. |
+| `@soundtouchjs/audio-worklet` | 2.1.1 | MPL-2.0 | Pitch-preserving tempo processing in an AudioWorklet. Keep the MPL notice and source availability for the worklet bundle. |
+| Noto Sans Lycian test font | system copy | OFL-1.1 | Test-only font attachment; license copy at `tests/fixtures/fonts/LICENSE-Noto.txt`. |
 | `@modelcontextprotocol/sdk` | 1.32.2 | MIT | MCP server/client transport. |
 | `ws` | 8.22.1 | MIT | Loopback WebSocket control bridge. |
 
@@ -21,11 +23,13 @@ release only after the license review in the development plan is complete.
 
 `native/builds/fragments-p0.json` builds FFmpeg 8.0/libav.js 6.8.8 with AVI,
 MPEG-4, MP3, H.264, HEVC, AAC, AC-3, FLAC and Opus components. These codecs have
-patent/licensing obligations independent of the LGPL source code. The build
-script retains FFmpeg/libav.js source tarballs in a local cache; only the build
-scripts, fragments and hash manifests are committed. Do not distribute the
-custom WASM artifacts until the LGPL notice/source offer and codec patent
-review are complete.
+patent/licensing obligations independent of the LGPL source code. The ST
+artifacts are checked into `apps/web/public/libav` so a fresh checkout can play
+legacy formats without an Emscripten toolchain; this is an internal/test
+convenience, not a clearance to publish them. Do not distribute the custom WASM
+artifacts until the LGPL notice/source offer and codec patent review are
+complete. The build script retains FFmpeg/libav.js source tarballs in a local
+cache; build scripts, fragments and hash manifests are committed.
 
 ## Test fixtures
 

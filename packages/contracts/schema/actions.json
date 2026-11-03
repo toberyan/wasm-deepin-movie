@@ -1876,6 +1876,20 @@
                     "minimum": -10000,
                     "type": "number"
                   },
+                  "deviceId": {
+                    "maxLength": 512,
+                    "type": "string"
+                  },
+                  "eq": {
+                    "items": {
+                      "maximum": 12,
+                      "minimum": -12,
+                      "type": "number"
+                    },
+                    "maxItems": 10,
+                    "minItems": 10,
+                    "type": "array"
+                  },
                   "gainDb": {
                     "maximum": 12,
                     "minimum": -24,
@@ -4148,6 +4162,20 @@
                     "minimum": -10000,
                     "type": "number"
                   },
+                  "deviceId": {
+                    "maxLength": 512,
+                    "type": "string"
+                  },
+                  "eq": {
+                    "items": {
+                      "maximum": 12,
+                      "minimum": -12,
+                      "type": "number"
+                    },
+                    "maxItems": 10,
+                    "minItems": 10,
+                    "type": "array"
+                  },
                   "gainDb": {
                     "maximum": 12,
                     "minimum": -24,
@@ -4504,6 +4532,20 @@
                         "maximum": 10000,
                         "minimum": -10000,
                         "type": "number"
+                      },
+                      "deviceId": {
+                        "maxLength": 512,
+                        "type": "string"
+                      },
+                      "eq": {
+                        "items": {
+                          "maximum": 12,
+                          "minimum": -12,
+                          "type": "number"
+                        },
+                        "maxItems": 10,
+                        "minItems": 10,
+                        "type": "array"
                       },
                       "gainDb": {
                         "maximum": 12,
@@ -4929,6 +4971,20 @@
                     "minimum": -10000,
                     "type": "number"
                   },
+                  "deviceId": {
+                    "maxLength": 512,
+                    "type": "string"
+                  },
+                  "eq": {
+                    "items": {
+                      "maximum": 12,
+                      "minimum": -12,
+                      "type": "number"
+                    },
+                    "maxItems": 10,
+                    "minItems": 10,
+                    "type": "array"
+                  },
                   "gainDb": {
                     "maximum": 12,
                     "minimum": -24,
@@ -5212,6 +5268,20 @@
                     "maximum": 10000,
                     "minimum": -10000,
                     "type": "number"
+                  },
+                  "deviceId": {
+                    "maxLength": 512,
+                    "type": "string"
+                  },
+                  "eq": {
+                    "items": {
+                      "maximum": 12,
+                      "minimum": -12,
+                      "type": "number"
+                    },
+                    "maxItems": 10,
+                    "minItems": 10,
+                    "type": "array"
                   },
                   "gainDb": {
                     "maximum": 12,
@@ -7545,6 +7615,20 @@
                     "maximum": 10000,
                     "minimum": -10000,
                     "type": "number"
+                  },
+                  "deviceId": {
+                    "maxLength": 512,
+                    "type": "string"
+                  },
+                  "eq": {
+                    "items": {
+                      "maximum": 12,
+                      "minimum": -12,
+                      "type": "number"
+                    },
+                    "maxItems": 10,
+                    "minItems": 10,
+                    "type": "array"
                   },
                   "gainDb": {
                     "maximum": 12,

@@ -96,6 +96,20 @@ export class DemuxWorkerClient {
     );
   }
 
+  extractSubtitles(streamIndexes: number[]): Promise<import("./protocol").SubtitleExtractResult[]> {
+    return this.request<import("./protocol").SubtitleExtractResult[]>(
+      { type: "extract-subtitles", requestId: 0, streamIndexes },
+      60_000
+    );
+  }
+
+  extractAttachments(): Promise<import("./protocol").AttachmentExtractResult[]> {
+    return this.request<import("./protocol").AttachmentExtractResult[]>(
+      { type: "extract-attachments", requestId: 0 },
+      30_000
+    );
+  }
+
   seek(positionUs: number): Promise<SeekResult> {
     return this.request<SeekResult>(
       { type: "seek", requestId: 0, positionUs },

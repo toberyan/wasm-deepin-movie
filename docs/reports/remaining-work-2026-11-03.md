@@ -19,9 +19,18 @@ Completed in the current tree:
 - Picture pipeline adds hue, rotation, crop (engine contract), sharpness,
   nearest/bilinear scaling; audio adds gain with clipping protection and balance.
 - H.264 Matroska extradata is normalized to avcC for WebCodecs; the embedded
-  subtitle stream schema bug is fixed. H.264 MKV is validated through the
-  custom WASM decoder; the WebCodecs MKV path still intermittently raises a
-  Chrome `Decoding error` (about 20% locally), so it is not a stable path yet.
+  subtitle stream schema bug is fixed. WebCodecs failure now triggers a
+  per-track rebuild through the custom WASM decoder, and the UI has a
+  force-WASM reopen control. The WebCodecs MKV path itself is still experimental.
+- Embedded SubRip/WebVTT/ASS packets are extracted before playback and rendered
+  through the existing overlay/JASSUB path; Matroska font attachments are fed
+  to JASSUB.
+- Audio adds a 10-band peaking EQ, output-device selection, delayed append and a
+  SoundTouch AudioWorklet for pitch-preserving tempo on mono/stereo tracks.
+- `?libavThreads=mt` now degrades to the ST artifact with a warning instead of
+  failing. True MT remains blocked by the upstream libav.js 6.8.8 threaded
+  build, which lacks struct accessors inside its Worker proxy.
+- Verification: 85 unit tests; 20 browser tests, all passing locally.
 - Source read failures now release the pending AVIO read and surface a typed
   source error instead of hanging the demux worker.
 - Verification: 83 unit tests; 16 browser tests (one MT fixme, one conditional
@@ -74,7 +83,7 @@ P1 的产品化缺口最大：多轨切换、内嵌字幕/字体、存储持久�
 | 真实 >4 GiB 实片 | 只有 5 GiB 稀疏扩展 MP4；不能证明长时长/尾索引真实媒体 | 外部环境准备 >4 GiB 实片，记录读取、seek、常驻内存曲线 |
 | 自动变体选择 | 完成：旧容器扩展名自动选择自定义变体；probe 失败时回退；e2e 覆盖 | 保持扩展名/能力清单随格式包更新 |
 | 功能包拆分/按需加载 | 当前单体 wasm ~3.9 MB ST / ~4.1 MB MT | 拆 `demux-common`/`decode-audio-common`/`decode-video-common`，跨实例只传序列化包/帧，按需加载 |
-| MT 运行时 | 已接入 `?libavThreads=mt`，但 `.thr.mjs` 在 Worker 中报 `AVFormatContext_nb_streams is not a function`；测试 fixme | 修 libav.js 6.8.8 MT 构建/加载或换构建方式后再启用 |
+| MT 运行时 | `.thr.mjs` 在 Worker 中缺少 struct accessor；已实现 ST 自动回退并覆盖 e2e，但无真实 MT 加速 | 修 libav.js 6.8.8 MT 构建/加载或换构建方式后再启用 |
 | 运行时故障注入 | 100 次开关/无效媒体已测；解码器崩溃、GPU context loss、Worker 中断、后台恢复未测 | 加故障注入 e2e；验证 epoch 丢弃、重建、错误码与资源释放 |
 | AVIO 读失败解阻塞 | 已发送空块并消费 `lastSourceError`；仍需读超时和 HTTP 故障注入 e2e | 增加读超时/取消测试 |
 | 可复现/许可构建 | emsdk 记录 6.0.13 但无固定工具链镜像；未设 `SOURCE_DATE_EPOCH`；自定义 FFmpeg 含专利编码 | 固定 emsdk commit/镜像、源码哈希、可复现构建、SBOM、LGPL source offer、codec 专利评审 |
@@ -86,8 +95,8 @@ P1 的产品化缺口最大：多轨切换、内嵌字幕/字体、存储持久�
 
 - **视频/音频切轨**：已通过保留 source/position 重建管线实现；后续可优化为
   decoder-only 重建，减少重新 probe 的延迟。
-- **内嵌字幕**：demux/probe 能列出字幕 stream（schema 已修复），但没有提取
-  subtitle packet/ASS 内容；需要 FFmpeg subtitle packet 输出、文本/位图分流、字体附件。
+- **内嵌字幕**：SubRip/WebVTT/ASS 已提取并渲染，字体附件已接入 JASSUB；仍缺
+  PGS/VobSub 位图字幕和更完整的编码/字体回退策略。
 - **字体**：JASSUB 当前用默认 Liberation Sans + 外挂 ASS；MKV 附件字体、用户导入
   字体、字体缺失回退与编码选择未实现。
 - **章节/附件**：`chapters` 恒为空；附件只有元数据，无内容读取/字体提取。
@@ -140,8 +149,8 @@ P1 的产品化缺口最大：多轨切换、内嵌字幕/字体、存储持久�
 
 - 画面：hue/旋转/裁切/锐化/缩放模式已实现；仍缺色温/RGB 增益、翻转/平移、
   明确的 YUV range/matrix/transfer/primaries 契约；截图含 ASS/OSD 合成。
-- 音频：平衡、增益/削波保护已实现；仍缺 10 段 EQ、单/双声道、混音、延迟、
-  保留音调变速（LGPL atempo/Web Audio）、输出设备选择。
+- 音频：增益/平衡/EQ/延迟/设备选择/SoundTouch 保留音调变速已实现；多声道
+  (>2) 仍回退到重采样变速，混音/声道映射未完成。
 - 字幕：主副双字幕、ASS 强制覆盖、字体管理；ASS 字体附件。
 - 播放：A-B 循环、章节、暂停向前逐帧；反向逐帧延后到 P3。
 - 任务/配置：截图/导出任务结果可通过 SDK/MCP 取回；预设、配置导入导出、命令面板、

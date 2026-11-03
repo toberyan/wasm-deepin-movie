@@ -87,12 +87,17 @@ const customFiles = [
   "libav-6.8.8.0-wasm-player-p0.thr.mjs",
   "libav-6.8.8.0-wasm-player-p0.thr.wasm"
 ];
-try {
-  await stat(customDir);
-  for (const file of customFiles) {
+let copiedCustom = 0;
+for (const file of customFiles) {
+  try {
     await copyFile(join(customDir, file), join(publicDir, file));
+    copiedCustom += 1;
+  } catch {
+    // MT artifacts may be absent; the ST variant is enough for the default UI.
   }
-  console.log(`copied ${customFiles.length} custom wasm-player-p0 artifacts`);
-} catch {
+}
+if (copiedCustom > 0) {
+  console.log(`copied ${copiedCustom} custom wasm-player-p0 artifacts`);
+} else {
   console.log("custom wasm-player-p0 artifacts not present; skipping");
 }

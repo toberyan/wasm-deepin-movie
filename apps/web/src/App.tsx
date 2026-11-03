@@ -4,6 +4,7 @@ import {
   type ActionId,
   type Bookmark,
   type HistoryItem,
+  type MediaSourceInput,
   type InvokeResult,
   type PlayerSnapshot,
   type TrackInfo
@@ -62,6 +63,10 @@ export function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const subtitleInputRef = useRef<HTMLInputElement | null>(null);
   const controllerRef = useRef<PlayerController | null>(null);
+  const lastSourceRef = useRef<MediaSourceInput | null>(null);
+  const [forceWasm, setForceWasm] = useState(
+    () => window.localStorage.getItem("wasm-player-force-wasm") === "1"
+  );
   const [snapshot, setSnapshot] = useState<PlayerSnapshot | null>(null);
   const [message, setMessage] = useState<string>("");
   const [seekUs, setSeekUs] = useState<number | null>(null);
@@ -75,6 +80,7 @@ export function App() {
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [bookmarkItems, setBookmarkItems] = useState<Bookmark[]>([]);
   const [urlDraft, setUrlDraft] = useState("");
+  const [audioDevices, setAudioDevices] = useState<{ deviceId: string; label: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [agentConnected, setAgentConnected] = useState(false);
   const requestSeq = useRef(0);
@@ -97,6 +103,25 @@ export function App() {
   useEffect(() => {
     document.documentElement.dataset.reduceMotion = reduceMotionSetting ? "true" : "false";
   }, [reduceMotionSetting]);
+
+  useEffect(() => {
+    if (!showSettings || !navigator.mediaDevices?.enumerateDevices) return;
+    let cancelled = false;
+    void navigator.mediaDevices.enumerateDevices().then((devices) => {
+      if (cancelled) return;
+      setAudioDevices(
+        devices
+          .filter((device) => device.kind === "audiooutput")
+          .map((device, index) => ({
+            deviceId: device.deviceId,
+            label: device.label || `音频输出 ${index + 1}`
+          }))
+      );
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [showSettings]);
 
   useEffect(() => {
     if (!showPlaylist) return;
@@ -255,9 +280,12 @@ export function App() {
   const openFile = async (file: File) => {
     setBusy(true);
     try {
+      const source: MediaSourceInput = { kind: "file", file, name: file.name };
+      lastSourceRef.current = source;
       await invoke(ACTION_IDS.mediaOpen, {
-        source: { kind: "file", file, name: file.name },
-        autoPlay: Boolean(snapshot?.settings["playback.autoPlay"]?.effective ?? false)
+        source,
+        autoPlay: Boolean(snapshot?.settings["playback.autoPlay"]?.effective ?? false),
+        ...(forceWasm ? { forceDecodePath: { video: "wasm", audio: "wasm" } } : {})
       });
     } finally {
       setBusy(false);
@@ -304,6 +332,7 @@ export function App() {
       setMessage("本地文件历史需要重新选择文件");
       return;
     }
+    lastSourceRef.current = source;
     await invoke(ACTION_IDS.mediaOpen, {
       source,
       startPositionUs: item.positionUs,
@@ -338,6 +367,46 @@ export function App() {
       name: formatTime(snapshot.positionUs),
       positionUs: snapshot.positionUs
     });
+  };
+
+  const toggleForceWasm = (enabled: boolean) => {
+    setForceWasm(enabled);
+    window.localStorage.setItem("wasm-player-force-wasm", enabled ? "1" : "0");
+  };
+
+  const reopenWithWasm = async () => {
+    const source = lastSourceRef.current;
+    if (!source) {
+      setMessage("当前媒体没有可复用的源，请重新选择文件");
+      return;
+    }
+    const preferred: Record<string, number> = {};
+    if (snapshot?.selected.video !== null && snapshot?.selected.video !== undefined) {
+      preferred.video = snapshot.selected.video;
+    }
+    if (snapshot?.selected.audio !== null && snapshot?.selected.audio !== undefined) {
+      preferred.audio = snapshot.selected.audio;
+    }
+    await invoke(ACTION_IDS.mediaOpen, {
+      source,
+      startPositionUs: snapshot?.positionUs ?? 0,
+      ...(Object.keys(preferred).length > 0 ? { preferredTracks: preferred } : {}),
+      forceDecodePath: { video: "wasm", audio: "wasm" }
+    });
+  };
+
+  const playPlaylistItem = async (item: {
+    index: number;
+    name: string;
+    url?: string;
+    sourceId?: string;
+  }) => {
+    if (item.url) {
+      lastSourceRef.current = { kind: "url", url: item.url, name: item.name };
+    } else if (item.sourceId) {
+      lastSourceRef.current = { kind: "sourceId", sourceId: item.sourceId, name: item.name };
+    }
+    await invoke(ACTION_IDS.playlistPlay, { index: item.index });
   };
 
   const takeScreenshot = async () => {
@@ -390,6 +459,10 @@ export function App() {
     const effective = value?.effective;
     return typeof effective === "number" ? effective * scale : fallback;
   };
+
+  const eqValues = Array.isArray(snapshot?.settings["audio.eq"]?.effective)
+    ? (snapshot?.settings["audio.eq"]?.effective as number[])
+    : Array.from({ length: 10 }, () => 0);
 
   return (
     <div className="app-shell">
@@ -651,6 +724,53 @@ export function App() {
                   }
                 />
               </label>
+              <label className="control-row">
+                <span>音频延迟 (ms) <em>{effectiveStatus(snapshot, "audio.delayMs")}</em></span>
+                <input
+                  type="range"
+                  min={-5000}
+                  max={5000}
+                  step={50}
+                  value={sliderValue("audio.delayMs", 0)}
+                  onChange={(event) =>
+                    void applyPatch({ audio: { delayMs: Number(event.target.value) } })
+                  }
+                />
+              </label>
+              <label className="control-row">
+                <span>输出设备 <em>{effectiveStatus(snapshot, "audio.deviceId")}</em></span>
+                <select
+                  value={String(snapshot.settings["audio.deviceId"]?.effective ?? "")}
+                  onChange={(event) =>
+                    void applyPatch({ audio: { deviceId: event.target.value } })
+                  }
+                >
+                  <option value="">默认设备</option>
+                  {audioDevices.map((device) => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="eq-grid">
+                {[31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000].map((frequency, index) => (
+                  <label key={frequency} className="eq-band">
+                    <span>{frequency >= 1000 ? `${frequency / 1000}k` : frequency}</span>
+                    <input
+                      type="range"
+                      min={-12}
+                      max={12}
+                      value={eqValues[index] ?? 0}
+                      onChange={(event) => {
+                        const next = [...eqValues];
+                        next[index] = Number(event.target.value);
+                        void applyPatch({ audio: { eq: next } });
+                      }}
+                    />
+                  </label>
+                ))}
+              </div>
             </section>
             <section>
               <h3>字幕</h3>
@@ -733,6 +853,21 @@ export function App() {
                   }
                 />
               </label>
+              <label className="control-row checkbox">
+                <span>优先 WASM 解码</span>
+                <input
+                  type="checkbox"
+                  checked={forceWasm}
+                  onChange={(event) => toggleForceWasm(event.target.checked)}
+                />
+              </label>
+              <button
+                className="secondary-button"
+                disabled={!snapshot.media || !lastSourceRef.current}
+                onClick={() => void reopenWithWasm()}
+              >
+                重新以 WASM 解码
+              </button>
             </section>
             <section>
               <h3>轨道</h3>
@@ -821,7 +956,7 @@ export function App() {
                       <div className="library-item" key={`${item.index}-${item.name}`}>
                         <button
                           className="library-main"
-                          onClick={() => void invoke(ACTION_IDS.playlistPlay, { index: item.index })}
+                          onClick={() => void playPlaylistItem(item)}
                         >
                           <span>{item.name}</span>
                           <small>{item.url ?? item.sourceId ?? ""}</small>

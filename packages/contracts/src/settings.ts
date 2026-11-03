@@ -15,7 +15,8 @@ export const SETTING_UNITS = [
   "times",
   "boolean",
   "enum",
-  "object"
+  "object",
+  "string"
 ] as const;
 export type SettingUnit = (typeof SETTING_UNITS)[number];
 
@@ -61,6 +62,8 @@ export const settingValueSchemas = {
   "audio.muted": z.boolean(),
   "audio.balance": ratioSigned,
   "audio.delayMs": z.number().min(-10000).max(10000),
+  "audio.eq": z.array(z.number().min(-12).max(12)).length(10),
+  "audio.deviceId": z.string().max(512),
   "subtitle.delayMs": z.number().min(-10000).max(10000),
   "subtitle.visible": z.boolean(),
   "subtitle.fontSizePct": z.number().min(50).max(250),
@@ -330,6 +333,34 @@ export const SETTING_DEFINITIONS: Record<SettingId, SettingDefinition> = {
     stage: "p2",
     advanced: true
   },
+  "audio.eq": {
+    id: "audio.eq",
+    group: "audio",
+    title: { zh: "10 段均衡器", en: "10-band equalizer" },
+    description: { zh: "各频段增益，单位 dB。", en: "Per-band gain in dB." },
+    schema: settingValueSchemas["audio.eq"],
+    defaultValue: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    unit: "db",
+    scope: "session",
+    requiresPipelineRebuild: false,
+    requires: [],
+    stage: "p2",
+    advanced: true
+  },
+  "audio.deviceId": {
+    id: "audio.deviceId",
+    group: "audio",
+    title: { zh: "输出设备", en: "Output device" },
+    description: { zh: "浏览器允许时选择音频输出设备。", en: "Select an audio output device when the browser permits it." },
+    schema: settingValueSchemas["audio.deviceId"],
+    defaultValue: "",
+    unit: "string",
+    scope: "session",
+    requiresPipelineRebuild: false,
+    requires: [],
+    stage: "p2",
+    advanced: true
+  },
   "subtitle.delayMs": {
     id: "subtitle.delayMs",
     group: "subtitle",
@@ -564,7 +595,9 @@ const audioPatchSchema = z
     gainDb: settingValueSchemas["audio.gainDb"].optional(),
     muted: settingValueSchemas["audio.muted"].optional(),
     balance: settingValueSchemas["audio.balance"].optional(),
-    delayMs: settingValueSchemas["audio.delayMs"].optional()
+    delayMs: settingValueSchemas["audio.delayMs"].optional(),
+    eq: settingValueSchemas["audio.eq"].optional(),
+    deviceId: settingValueSchemas["audio.deviceId"].optional()
   })
   .strict();
 

@@ -18,6 +18,7 @@ interface PlayerState {
   selected: { video: number | null; audio: number | null; subtitle: number | null };
   positionUs: number;
   durationUs: number;
+  rate: number;
   stats: {
     decodedVideoFrames: number;
     renderedFrames: number;
@@ -214,6 +215,36 @@ test("opens MP4, renders the first frame, plays audio and pauses", async ({ page
   expect(Math.abs(stillPausedAt - pausedAt)).toBeLessThan(120_000);
 });
 
+test("changes rate with the pitch-preserving audio path", async ({ page }) => {
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  await page.getByRole("button", { name: "播放/暂停" }).click();
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return snapshot?.phase === "playing";
+  });
+  const changed = await invoke(page, "playback.setRate", { rate: 1.5 });
+  expect(changed.status).toBe("applied");
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(
+      snapshot &&
+        snapshot.rate === 1.5 &&
+        snapshot.positionUs > 400_000 &&
+        snapshot.stats.decodedAudioFrames > 0
+    );
+  });
+  const snapshot = await state(page);
+  expect(snapshot.phase).toBe("playing");
+});
+
 test("seeks, applies picture settings, loads subtitles and captures a screenshot", async ({ page }) => {
   await page.goto("/");
   await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
@@ -246,7 +277,11 @@ test("seeks, applies picture settings, loads subtitles and captures a screenshot
         sharpness: 0.5,
         scaleMode: "nearest"
       },
-      audio: { volume: 0.4 },
+      audio: {
+        volume: 0.4,
+        eq: [1, 2, 3, 4, 5, 4, 3, 2, 1, 0],
+        delayMs: 100
+      },
       subtitle: { delayMs: 100 }
     }
   });
@@ -262,6 +297,10 @@ test("seeks, applies picture settings, loads subtitles and captures a screenshot
   expect(afterSettings.settings["video.crop"]?.effective).toMatchObject({ left: 0.1 });
   expect(afterSettings.settings["video.sharpness"]?.effective).toBe(0.5);
   expect(afterSettings.settings["video.scaleMode"]?.effective).toBe("nearest");
+  expect(afterSettings.settings["audio.eq"]?.effective).toEqual([
+    1, 2, 3, 4, 5, 4, 3, 2, 1, 0
+  ]);
+  expect(afterSettings.settings["audio.delayMs"]?.effective).toBe(100);
 
   const subtitle = readFileSync(resolve("tests/fixtures/generated/subtitle.srt"));
   await page.locator('input[type="file"]').nth(1).setInputFiles({
@@ -279,6 +318,60 @@ test("seeks, applies picture settings, loads subtitles and captures a screenshot
   await page.getByRole("button", { name: "截图" }).first().click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/screenshot-.*\.png$/);
+});
+
+test("renders embedded SubRip subtitles from Matroska", async ({ page }) => {
+  const data = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac-subs.mkv"));
+  await page.route("**/fixtures/sample-h264-aac-subs.mkv", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/x-matroska", "Access-Control-Allow-Origin": "*" },
+      body: data
+    })
+  );
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac-subs.mkv"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac-subs.mkv",
+    mimeType: "video/x-matroska",
+    buffer: video
+  });
+  await waitForMedia(page);
+  const snapshot = await state(page);
+  expect(
+    snapshot.tracks.some(
+      (track) => track.type === "subtitle" && ["srt", "subrip"].includes(track.codec)
+    )
+  ).toBe(true);
+  await invoke(page, "playback.seek", { positionUs: 1_000_000 });
+  await page.waitForFunction(() => {
+    const overlay = document.querySelector(".subtitle-overlay");
+    return overlay?.textContent?.includes("Hello WASM player") ?? false;
+  });
+});
+
+test("renders embedded ASS subtitles from Matroska", async ({ page }) => {
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac-ass.mkv"));
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac-ass.mkv",
+    mimeType: "video/x-matroska",
+    buffer: video
+  });
+  await waitForMedia(page);
+  const snapshot = await state(page);
+  expect(snapshot.tracks.some((track) => track.type === "subtitle" && track.codec === "ass")).toBe(true);
+  await invoke(page, "playback.seek", { positionUs: 800_000 });
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector(".ass-subtitle-canvas") as HTMLCanvasElement | null;
+    if (!canvas) return false;
+    return getComputedStyle(canvas).display !== "none" && canvas.width > 0 && canvas.height > 0;
+  });
+  const diagnostics = await invoke(page, "diagnostics.get", {});
+  const output = diagnostics.output as { warnings: string[] };
+  expect(output.warnings.some((warning) => warning.includes("ASS renderer unavailable"))).toBe(false);
 });
 
 test("renders ASS subtitles through JASSUB/libass", async ({ page }) => {
@@ -508,7 +601,7 @@ test("survives 100 open/close cycles and invalid media", async ({ page }) => {
   expect(result.diagnostics.queues.videoFrames).toBe(0);
 });
 
-test.fixme("loads the threaded custom libav build when requested", async ({ page }) => {
+test("falls back from a broken threaded libav runtime to ST", async ({ page }) => {
   test.skip(!customVariantAvailable, "custom wasm-player-p0 artifacts are not built");
   test.skip(
     !existsSync(resolve("apps/web/public/libav/libav-6.8.8.0-wasm-player-p0.thr.mjs")),
@@ -541,7 +634,9 @@ test.fixme("loads the threaded custom libav build when requested", async ({ page
   await waitForMedia(page);
   const diagnostics = await invoke(page, "diagnostics.get", {});
   const warnings = (diagnostics.output as { warnings: string[] }).warnings;
-  expect(warnings.some((warning) => warning === "libav thread target: thr")).toBe(true);
+  expect(
+    warnings.some((warning) => warning.includes("fell back to the single-threaded build"))
+  ).toBe(true);
   await page.waitForFunction(() => {
     const snapshot = (window as unknown as PlayerWindow).__player?.getState();
     return Boolean(snapshot && snapshot.stats.renderedFrames > 0);
@@ -692,6 +787,33 @@ test("persists global settings and history across reloads", async ({ page }) => 
   expect(reloadedPlaylist.status).toBe("applied");
   const playlistItems = (reloadedPlaylist.output as { items: { name: string; url?: string }[] }).items;
   expect(playlistItems[0]?.url).toBe("https://example.invalid/movie.mp4");
+});
+
+test("reopens the current file through the force-WASM UI", async ({ page }) => {
+  test.skip(!customVariantAvailable, "custom wasm-player-p0 artifacts are not built");
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByLabel("优先 WASM 解码").check();
+  await page.getByRole("button", { name: "重新以 WASM 解码" }).click();
+  await page.waitForFunction(() => {
+    const current = (window as unknown as PlayerWindow).__player?.getState();
+    return current?.media?.decodePaths["video:0"] === "wasm";
+  });
+  const snapshot = await state(page);
+  expect(snapshot.media?.decodePaths["video:0"]).toBe("wasm");
+  expect(snapshot.media?.decodePaths["audio:1"]).toBe("wasm");
+  await page.waitForFunction(() => {
+    const current = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(current && current.stats.renderedFrames > 0);
+  });
 });
 
 test("opens H.264 MKV through the custom WASM decoder", async ({ page }) => {

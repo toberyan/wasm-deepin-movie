@@ -495,6 +495,71 @@
       "unit": "ms"
     },
     {
+      "advanced": true,
+      "defaultValue": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "description": {
+        "en": "Per-band gain in dB.",
+        "zh": "各频段增益，单位 dB。"
+      },
+      "group": "audio",
+      "id": "audio.eq",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "items": {
+          "maximum": 12,
+          "minimum": -12,
+          "type": "number"
+        },
+        "maxItems": 10,
+        "minItems": 10,
+        "type": "array"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "10-band equalizer",
+        "zh": "10 段均衡器"
+      },
+      "unit": "db"
+    },
+    {
+      "advanced": true,
+      "defaultValue": "",
+      "description": {
+        "en": "Select an audio output device when the browser permits it.",
+        "zh": "浏览器允许时选择音频输出设备。"
+      },
+      "group": "audio",
+      "id": "audio.deviceId",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "maxLength": 512,
+        "type": "string"
+      },
+      "scope": "session",
+      "stage": "p2",
+      "title": {
+        "en": "Output device",
+        "zh": "输出设备"
+      },
+      "unit": "string"
+    },
+    {
       "advanced": false,
       "defaultValue": 0,
       "description": {

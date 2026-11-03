@@ -17,7 +17,9 @@ const ids = {
   "sample-mpeg4-mp3.avi": "S4",
   "sample-h264-aac-subs.mkv": "S5",
   "sample-multi-audio.mp4": "S6",
-  "sample-multi-video.webm": "S7"
+  "sample-multi-video.webm": "S7",
+  "sample-h264-aac-ass.mkv": "S8",
+  "sample-h264-aac-ass-font.mkv": "S9"
 };
 
 const expected = {
@@ -27,7 +29,9 @@ const expected = {
   "sample-mpeg4-mp3.avi": null,
   "sample-h264-aac-subs.mkv": { video: "webcodecs", audio: "webcodecs" },
   "sample-multi-audio.mp4": { video: "webcodecs", audio: "webcodecs" },
-  "sample-multi-video.webm": { video: "webcodecs", audio: "webcodecs" }
+  "sample-multi-video.webm": { video: "webcodecs", audio: "webcodecs" },
+  "sample-h264-aac-ass.mkv": { video: "webcodecs", audio: "webcodecs" },
+  "sample-h264-aac-ass-font.mkv": { video: "webcodecs", audio: "webcodecs" }
 };
 
 const fixtures = [];

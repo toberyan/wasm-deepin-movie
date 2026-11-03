@@ -24,6 +24,7 @@ export interface OpenMediaRequest {
   startPositionUs?: number;
   forceDecodePath?: Partial<Record<TrackType, "webcodecs" | "wasm">>;
   preferredTracks?: Partial<Record<TrackType, number>>;
+  preferCustomVariant?: boolean;
 }
 
 export interface MediaOpenResult {
@@ -118,6 +119,8 @@ export interface SubtitleLoadInput {
   name?: string;
   encoding?: string;
   format?: "auto" | "srt" | "vtt" | "ass" | "ssa";
+  trackIndex?: number;
+  activate?: boolean;
 }
 
 /**

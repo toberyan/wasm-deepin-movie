@@ -1,9 +1,69 @@
 {
   "schemaVersion": 1,
   "generatedBy": "ffmpeg 6.1.5-0deepin4 (system GPL build; used only to create test fixtures, not shipped)",
-  "generatedAt": "2026-11-03T00:47:26.885Z",
+  "generatedAt": "2026-11-03T03:04:07.001Z",
   "note": "Synthetic lavfi sources. H.264/HEVC/AAC/AC-3 are test assets; review distribution/licensing before publishing binaries.",
   "fixtures": [
+    {
+      "id": "S9",
+      "path": "generated/sample-h264-aac-ass-font.mkv",
+      "sha256": "091c0607d2cc3a9e5dbbf76ff9ab5773a90aa2c263da07c26fa0c69241810ed2",
+      "bytes": 240954,
+      "container": "matroska,webm",
+      "durationSec": 2.026,
+      "video": {
+        "codec": "h264",
+        "profile": "High",
+        "width": 640,
+        "height": 360,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": {
+        "codec": "aac",
+        "sampleRate": 48000,
+        "channels": 1,
+        "channelLayout": "mono"
+      },
+      "subtitle": {
+        "codec": "ass"
+      },
+      "expectedDecodePath": {
+        "video": "webcodecs",
+        "audio": "webcodecs"
+      },
+      "license": "Generated locally for tests; not distributed as a product asset."
+    },
+    {
+      "id": "S8",
+      "path": "generated/sample-h264-aac-ass.mkv",
+      "sha256": "e0c82f4112d2c46579848c28b0bbadd36646f162048b557104a56153341cd8a8",
+      "bytes": 236395,
+      "container": "matroska,webm",
+      "durationSec": 2.021,
+      "video": {
+        "codec": "h264",
+        "profile": "High",
+        "width": 640,
+        "height": 360,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": {
+        "codec": "aac",
+        "sampleRate": 48000,
+        "channels": 1,
+        "channelLayout": "mono"
+      },
+      "subtitle": {
+        "codec": "ass"
+      },
+      "expectedDecodePath": {
+        "video": "webcodecs",
+        "audio": "webcodecs"
+      },
+      "license": "Generated locally for tests; not distributed as a product asset."
+    },
     {
       "id": "S5",
       "path": "generated/sample-h264-aac-subs.mkv",

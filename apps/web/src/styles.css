@@ -634,3 +634,24 @@ button {
   transition-duration: 0.001ms !important;
   scroll-behavior: auto !important;
 }
+
+.eq-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 6px 0 14px;
+}
+
+.eq-band {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.eq-band input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}

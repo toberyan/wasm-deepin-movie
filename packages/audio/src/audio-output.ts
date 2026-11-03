@@ -1,4 +1,6 @@
 import { PlayerError } from "@wasm-player/contracts";
+import { SoundTouchNode } from "@soundtouchjs/audio-worklet";
+import soundtouchProcessorUrl from "@soundtouchjs/audio-worklet/processor?url";
 
 const WORKLET_SOURCE = `
 class WasmPlayerPcmProcessor extends AudioWorkletProcessor {
@@ -165,10 +167,16 @@ export class AudioOutput {
   private readonly options: AudioOutputOptions;
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  private soundTouch: SoundTouchNode | null = null;
   private gain: GainNode | null = null;
   private panner: StereoPannerNode | null = null;
   private gainDb = 0;
   private balance = 0;
+  private eqGains: number[] = Array.from({ length: 10 }, () => 0);
+  private eqFilters: BiquadFilterNode[] = [];
+  private deviceId = "";
+  private delayMs = 0;
+  private pendingDelayFrames = 0;
   private workletUrl: string | null = null;
   private configuredChannels = 0;
   private latestClock: AudioClockSample | null = null;
@@ -201,6 +209,7 @@ export class AudioOutput {
     const blob = new Blob([WORKLET_SOURCE], { type: "application/javascript" });
     this.workletUrl = URL.createObjectURL(blob);
     await context.audioWorklet.addModule(this.workletUrl);
+    await SoundTouchNode.register(context, soundtouchProcessorUrl);
     this.createGraph();
   }
 
@@ -220,6 +229,24 @@ export class AudioOutput {
     const context = this.context;
     const node = this.node;
     if (!context || !node) return;
+    let appendTimestampUs = timestampUs;
+    if (this.pendingDelayFrames !== 0 && channels[0]) {
+      const frames = channels[0].length;
+      if (this.pendingDelayFrames > 0) {
+        const silenceFrames = Math.min(this.pendingDelayFrames, frames);
+        channels = channels.map((channel) => {
+          const output = new Float32Array(channel.length + silenceFrames);
+          output.set(channel, silenceFrames);
+          return output;
+        });
+        this.pendingDelayFrames -= silenceFrames;
+      } else {
+        const drop = Math.min(-this.pendingDelayFrames, frames);
+        channels = channels.map((channel) => channel.slice(drop));
+        appendTimestampUs += (drop / this.options.sampleRate) * 1_000_000;
+        this.pendingDelayFrames += drop;
+      }
+    }
     if (channels.length !== this.configuredChannels) {
       // Rebuilding the worklet graph keeps channel counts consistent. This is
       // rare (track change) and happens before the next append.
@@ -231,7 +258,7 @@ export class AudioOutput {
     node.port.postMessage(
       {
         type: "append",
-        timestampUs,
+        timestampUs: appendTimestampUs,
         channels: buffers
       },
       buffers
@@ -239,6 +266,7 @@ export class AudioOutput {
   }
 
   flush(timestampUs?: number): void {
+    this.pendingDelayFrames = Math.round((this.delayMs / 1000) * this.options.sampleRate);
     this.generation += 1;
     this.node?.port.postMessage({ type: "flush", timestampUs, generation: this.generation });
     this.latestClock = null;
@@ -250,7 +278,14 @@ export class AudioOutput {
 
   setRate(rate: number): void {
     this.rate = rate;
-    this.node?.port.postMessage({ type: "rate", value: rate });
+    const context = this.context;
+    const soundTouch = this.soundTouch;
+    if (soundTouch && context) {
+      soundTouch.playbackRate.setValueAtTime(rate, context.currentTime);
+      this.node?.port.postMessage({ type: "rate", value: 1 });
+    } else {
+      this.node?.port.postMessage({ type: "rate", value: rate });
+    }
   }
 
   setVolume(volume: number, muted = false): void {
@@ -277,6 +312,35 @@ export class AudioOutput {
     }
   }
 
+  setEqualizer(gains: number[]): void {
+    this.eqGains = Array.from({ length: 10 }, (_, index) =>
+      Math.max(-12, Math.min(12, Number(gains[index] ?? 0)))
+    );
+    this.eqFilters.forEach((filter, index) => {
+      const context = this.context;
+      if (context) {
+        filter.gain.setTargetAtTime(this.eqGains[index] ?? 0, context.currentTime, 0.02);
+      }
+    });
+  }
+
+  setDelayMs(delayMs: number): void {
+    this.delayMs = Math.max(-10_000, Math.min(10_000, delayMs));
+    this.pendingDelayFrames = Math.round((this.delayMs / 1000) * this.options.sampleRate);
+  }
+
+  async setDevice(deviceId: string): Promise<void> {
+    this.deviceId = deviceId;
+    const context = this.context as (AudioContext & {
+      setSinkId?: (id: string) => Promise<void>;
+    }) | null;
+    if (!context) return;
+    if (!context.setSinkId) {
+      throw new PlayerError("UNSUPPORTED", "audio output device selection is unavailable");
+    }
+    await context.setSinkId(deviceId);
+  }
+
   setUnderrunHandler(handler: () => void): void {
     this.onUnderrun = handler;
   }
@@ -299,10 +363,14 @@ export class AudioOutput {
 
   async close(): Promise<void> {
     this.node?.disconnect();
+    this.soundTouch?.disconnect();
     this.gain?.disconnect();
+    this.eqFilters.forEach((filter) => filter.disconnect());
     this.panner?.disconnect();
     this.node = null;
+    this.soundTouch = null;
     this.gain = null;
+    this.eqFilters = [];
     this.panner = null;
     if (this.context) {
       await this.context.close().catch(() => undefined);
@@ -323,12 +391,40 @@ export class AudioOutput {
       numberOfOutputs: 1,
       outputChannelCount: [Math.max(1, Math.min(8, channels))]
     });
+    let soundTouch: SoundTouchNode | null = null;
+    if (channels <= 2) {
+      try {
+        soundTouch = new SoundTouchNode({
+          context,
+          outputChannelCount: channels <= 1 ? 1 : 2
+        });
+        soundTouch.playbackRate.value = this.rate;
+      } catch {
+        soundTouch = null;
+      }
+    }
     const gain = context.createGain();
     gain.gain.value = this.muted ? 0 : this.volume;
     const panner = context.createStereoPanner();
     panner.pan.value = this.balance;
-    node.connect(gain);
-    gain.connect(panner);
+    const frequencies = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+    const filters = frequencies.map((frequency, index) => {
+      const filter = context.createBiquadFilter();
+      filter.type = "peaking";
+      filter.frequency.value = frequency;
+      filter.Q.value = 1;
+      filter.gain.value = this.eqGains[index] ?? 0;
+      return filter;
+    });
+    if (soundTouch) node.connect(soundTouch);
+    let previous: AudioNode = soundTouch ?? node;
+    previous.connect(gain);
+    previous = gain;
+    for (const filter of filters) {
+      previous.connect(filter);
+      previous = filter;
+    }
+    previous.connect(panner);
     panner.connect(context.destination);
     node.port.onmessage = (event: MessageEvent<{
       type: string;
@@ -361,8 +457,11 @@ export class AudioOutput {
       )
     });
     node.port.postMessage({ type: "gain", value: 10 ** (this.gainDb / 20) });
+    node.port.postMessage({ type: "rate", value: soundTouch ? 1 : this.rate });
     this.node = node;
+    this.soundTouch = soundTouch;
     this.gain = gain;
+    this.eqFilters = filters;
     this.panner = panner;
   }
 }

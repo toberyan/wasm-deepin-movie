@@ -12,5 +12,8 @@ test-results/
 apps/web/public/libav/*.wasm
 apps/web/public/libav/*.mjs
 !apps/web/public/libav/.gitkeep
+!apps/web/public/libav/libav-wasm-player-p0.mjs
+!apps/web/public/libav/libav-6.8.8.0-wasm-player-p0.wasm.mjs
+!apps/web/public/libav/libav-6.8.8.0-wasm-player-p0.wasm.wasm
 tests/fixtures/generated/large-sparse.mp4
 native/builds/artifacts/
