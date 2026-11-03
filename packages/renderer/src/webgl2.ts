@@ -169,6 +169,8 @@ export class WebGL2Renderer {
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private textureWidth = 0;
   private textureHeight = 0;
+  private readonly frameCanvas = document.createElement("canvas");
+  private readonly frameContext = this.frameCanvas.getContext("2d", { alpha: false });
   private lost = false;
   private settings: RenderSettings = { ...DEFAULT_RENDER_SETTINGS };
 
@@ -195,6 +197,26 @@ export class WebGL2Renderer {
   }
 
   render(frame: VideoFrame): void {
+    const width = frame.displayWidth || frame.codedWidth;
+    const height = frame.displayHeight || frame.codedHeight;
+    let source: TexImageSource = frame;
+    if (
+      this.frameContext &&
+      (frame.codedWidth !== width || frame.codedHeight !== height)
+    ) {
+      if (this.frameCanvas.width !== width) this.frameCanvas.width = width;
+      if (this.frameCanvas.height !== height) this.frameCanvas.height = height;
+      this.frameContext.drawImage(frame, 0, 0, width, height);
+      source = this.frameContext.getImageData(0, 0, width, height);
+    }
+    this.drawSource(source, width, height);
+  }
+
+  renderImage(image: ImageData): void {
+    this.drawSource(image, image.width, image.height);
+  }
+
+  private drawSource(source: TexImageSource, width: number, height: number): void {
     const gl = this.gl;
     if (!gl || this.lost) return;
     const program = this.program;
@@ -203,16 +225,14 @@ export class WebGL2Renderer {
     gl.useProgram(program);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    const width = frame.displayWidth || frame.codedWidth;
-    const height = frame.displayHeight || frame.codedHeight;
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     if (width !== this.textureWidth || height !== this.textureHeight) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
       this.textureWidth = width;
       this.textureHeight = height;
     } else {
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
     }
     const crop = this.settings.crop;
     const visibleWidth = width * (1 - crop.left - crop.right);
@@ -347,7 +367,12 @@ export class WebGL2Renderer {
       uBrightness: gl.getUniformLocation(this.program, "uBrightness"),
       uContrast: gl.getUniformLocation(this.program, "uContrast"),
       uSaturation: gl.getUniformLocation(this.program, "uSaturation"),
-      uGamma: gl.getUniformLocation(this.program, "uGamma")
+      uGamma: gl.getUniformLocation(this.program, "uGamma"),
+      uHue: gl.getUniformLocation(this.program, "uHue"),
+      uCrop: gl.getUniformLocation(this.program, "uCrop"),
+      uRotation: gl.getUniformLocation(this.program, "uRotation"),
+      uSharpness: gl.getUniformLocation(this.program, "uSharpness"),
+      uTexel: gl.getUniformLocation(this.program, "uTexel")
     };
     this.textureWidth = 0;
     this.textureHeight = 0;

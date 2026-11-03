@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generatedBy": "ffmpeg 6.1.5-0deepin4 (system GPL build; used only to create test fixtures, not shipped)",
-  "generatedAt": "2026-11-03T03:04:07.001Z",
+  "generatedAt": "2026-11-03T05:58:27.227Z",
   "note": "Synthetic lavfi sources. H.264/HEVC/AAC/AC-3 are test assets; review distribution/licensing before publishing binaries.",
   "fixtures": [
     {
@@ -119,6 +119,29 @@
       "expectedDecodePath": {
         "video": "webcodecs",
         "audio": "webcodecs"
+      },
+      "license": "Generated locally for tests; not distributed as a product asset."
+    },
+    {
+      "id": "S10",
+      "path": "generated/sample-h264-cropped.mp4",
+      "sha256": "dd007ffc6806c864ca9a68e814e62d502fca5c11e9b4f5f9c34117f9258e651a",
+      "bytes": 433174,
+      "container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "durationSec": 1,
+      "video": {
+        "codec": "h264",
+        "profile": "Constrained Baseline",
+        "width": 1254,
+        "height": 898,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": null,
+      "subtitle": null,
+      "expectedDecodePath": {
+        "video": "wasm",
+        "audio": null
       },
       "license": "Generated locally for tests; not distributed as a product asset."
     },

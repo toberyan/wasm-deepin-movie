@@ -391,12 +391,8 @@ export class DemuxSession {
         time_base: [stream.time_base_num, stream.time_base_den]
       });
       void codec;
-      this.wasmDecoders.set(index, {
-        stream,
-        decoder,
-        packet,
-        frame
-      });
+      const state: WasmDecoderState = { stream, decoder, packet, frame };
+      this.wasmDecoders.set(index, state);
       configured.push(index);
     }
     return configured;
@@ -685,27 +681,28 @@ export class DemuxSession {
     const libav = this.requireLibav();
     const isVideo = packet.streamType === "video";
     if (isVideo) {
-      const images = (await libav.ff_decode_multi(
+      const frames = (await libav.ff_decode_multi(
         state.decoder,
         state.packet,
         state.frame,
         [raw],
-        { copyoutFrame: "ImageData" }
-      )) as ImageData[];
+        { copyoutFrame: "default" }
+      )) as LibAVJS.Frame[];
       const durationUs = packet.durationUs > 0 ? packet.durationUs : 33_333;
       const baseTimestamp = state.nextVideoTimestampUs ?? packet.ptsUs;
-      images.forEach((image, index) => {
-        const copy = new Uint8ClampedArray(image.data);
+      frames.forEach((frame, index) => {
+        const image = avFrameToRgba(frame);
+        if (!image) return;
         videoOut.push({
           streamIndex: packet.streamIndex,
-          data: copy.buffer,
+          data: image.data,
           width: image.width,
           height: image.height,
           timestampUs: baseTimestamp + Math.round(index * durationUs),
           durationUs
         });
       });
-      state.nextVideoTimestampUs = baseTimestamp + durationUs * Math.max(1, images.length);
+      state.nextVideoTimestampUs = baseTimestamp + durationUs * Math.max(1, frames.length);
       return;
     }
     const frames = (await libav.ff_decode_multi(
@@ -740,27 +737,28 @@ export class DemuxSession {
     for (const state of this.wasmDecoders.values()) {
       const isVideo = state.stream.codec_type === STREAM_TYPE_VIDEO;
       if (isVideo) {
-        const images = (await libav.ff_decode_multi(
+        const frames = (await libav.ff_decode_multi(
           state.decoder,
           state.packet,
           state.frame,
           [],
-          { fin: true, copyoutFrame: "ImageData" }
-        )) as ImageData[];
+          { fin: true, copyoutFrame: "default" }
+        )) as LibAVJS.Frame[];
         const durationUs = 33_333;
         const baseTimestamp = state.nextVideoTimestampUs ?? 0;
-        images.forEach((image, index) => {
-          const copy = new Uint8ClampedArray(image.data);
+        frames.forEach((frame, index) => {
+          const image = avFrameToRgba(frame);
+          if (!image) return;
           videoOut.push({
             streamIndex: state.stream.index,
-            data: copy.buffer,
+            data: image.data,
             width: image.width,
             height: image.height,
             timestampUs: baseTimestamp + index * durationUs,
             durationUs
           });
         });
-        state.nextVideoTimestampUs = baseTimestamp + durationUs * Math.max(1, images.length);
+        state.nextVideoTimestampUs = baseTimestamp + durationUs * Math.max(1, frames.length);
       } else {
         const frames = (await libav.ff_decode_multi(
           state.decoder,
@@ -919,10 +917,14 @@ export class DemuxSession {
           if (candidate && candidate.codec !== "unknown") {
             const videoConfig: VideoCodecConfig = {
               type: "video",
-              codec: candidate.codec,
-              codedWidth: candidate.codedWidth,
-              codedHeight: candidate.codedHeight
+              codec: candidate.codec
             };
+            // For cropped H.264 (width not macroblock-aligned) the display size
+            // is not the coded size; let the decoder derive coded dimensions.
+            if (!candidate.codec.startsWith("avc1") || (candidate.codedWidth ?? 0) % 16 === 0) {
+              if (candidate.codedWidth) videoConfig.codedWidth = candidate.codedWidth;
+              if (candidate.codedHeight) videoConfig.codedHeight = candidate.codedHeight;
+            }
             let description = configDescription(candidate.description);
             if (!description && codecpar.extradata) {
               description = codecpar.extradata.buffer.slice(
@@ -1104,6 +1106,45 @@ export class DemuxSession {
     }
     return this.libav;
   }
+}
+
+function avFrameToRgba(frame: LibAVJS.Frame): { data: ArrayBuffer; width: number; height: number } | null {
+  const width = frame.width ?? 0;
+  const height = frame.height ?? 0;
+  if (width <= 0 || height <= 0) return null;
+  if (frame.format !== 0 && frame.format !== 12) return null;
+  const data = frame.data as Uint8Array;
+  const layout = frame.layout;
+  if (!layout || layout.length < 3) return null;
+  const crop = frame.crop ?? { top: 0, bottom: 0, left: 0, right: 0 };
+  const visibleWidth = width - crop.left - crop.right;
+  const visibleHeight = height - crop.top - crop.bottom;
+  if (visibleWidth <= 0 || visibleHeight <= 0) return null;
+  const yPlane = layout[0]!;
+  const uPlane = layout[1]!;
+  const vPlane = layout[2]!;
+  const output = new Uint8ClampedArray(visibleWidth * visibleHeight * 4);
+  let offset = 0;
+  for (let y = 0; y < visibleHeight; y += 1) {
+    const sourceY = y + crop.top;
+    const yRow = sourceY * yPlane.stride + crop.left;
+    const uvRow = Math.floor(sourceY / 2);
+    for (let x = 0; x < visibleWidth; x += 1) {
+      const sourceX = x + crop.left;
+      const yValue = data[yRow + x] ?? 0;
+      const uValue = data[uPlane.offset + uvRow * uPlane.stride + Math.floor(sourceX / 2)] ?? 128;
+      const vValue = data[vPlane.offset + uvRow * vPlane.stride + Math.floor(sourceX / 2)] ?? 128;
+      const c = yValue - 16;
+      const d = uValue - 128;
+      const e = vValue - 128;
+      output[offset] = Math.max(0, Math.min(255, Math.round(1.164 * c + 1.596 * e)));
+      output[offset + 1] = Math.max(0, Math.min(255, Math.round(1.164 * c - 0.392 * d - 0.813 * e)));
+      output[offset + 2] = Math.max(0, Math.min(255, Math.round(1.164 * c + 2.017 * d)));
+      output[offset + 3] = 255;
+      offset += 4;
+    }
+  }
+  return { data: output.buffer as ArrayBuffer, width: visibleWidth, height: visibleHeight };
 }
 
 function normalizeVideoDescription(

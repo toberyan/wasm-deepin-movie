@@ -816,6 +816,25 @@ test("reopens the current file through the force-WASM UI", async ({ page }) => {
   });
 });
 
+test("plays H.264 with non-macroblock-aligned dimensions", async ({ page }) => {
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-cropped.mp4"));
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-cropped.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  const snapshot = await state(page);
+  expect(snapshot.media?.decodePaths["video:0"]).toBe("wasm");
+  await page.getByRole("button", { name: "播放/暂停" }).click();
+  await page.waitForFunction(() => {
+    const current = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(current && current.stats.renderedFrames > 3);
+  });
+});
+
 test("recovers H.264 MKV WebCodecs failures automatically", async ({ page }) => {
   test.setTimeout(120_000);
   const data = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac-subs.mkv"));

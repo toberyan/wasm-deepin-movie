@@ -117,6 +117,9 @@ Working and verified:
   screenshot.
 - Project-owned ST/MT variants: AVI/MPEG-4/MP3, forced H.264/AAC, HEVC/AC-3,
   FLAC/Opus; AVI auto-selects the custom variant by container extension.
+- Matroska H.264 and cropped/non-16-aligned H.264 MP4 use the custom WASM
+  decoder. WASM YUV420p frames are converted to RGBA in CPU so padded/odd
+  dimensions render without tiling.
 - Audio/video track switching by rebuilding the pipeline at the current position.
 - IndexedDB persistence for global settings, history, playlist, bookmarks and
   presets; library drawer and light/system theme.

@@ -11,6 +11,11 @@ ffmpeg -hide_banner -loglevel error -y \
   -c:a aac -b:a 128k "$out/sample-h264-aac.mp4"
 
 ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc2=size=1254x898:rate=24 \
+  -t 1 -c:v libx264 -profile:v baseline -pix_fmt yuv420p -g 24 \
+  "$out/sample-h264-cropped.mp4"
+
+ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc2=size=640x360:rate=30 \
   -f lavfi -i sine=frequency=330:sample_rate=48000 \
   -t 2 -c:v libx265 -tag:v hvc1 -x265-params log-level=error:keyint=30 \

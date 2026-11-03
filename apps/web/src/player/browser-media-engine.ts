@@ -78,7 +78,8 @@ import {
 } from "@wasm-player/subtitles";
 
 interface QueuedVideoFrame {
-  frame: VideoFrame;
+  frame?: VideoFrame;
+  image?: ImageData;
   timestampUs: number;
   durationUs: number;
   byteLength: number;
@@ -98,7 +99,7 @@ const VIDEO_QUEUE_LIMITS = {
   maxBytes: 64 * 1024 * 1024,
   maxDurationUs: 2_000_000
 };
-const VIDEO_QUEUE_TARGET_FRAMES = 24;
+const VIDEO_QUEUE_TARGET_FRAMES = 12;
 
 function nowSeconds(): number {
   return performance.now() / 1000;
@@ -363,6 +364,27 @@ export class BrowserMediaEngine implements MediaEngine {
         }
       }
     }
+    const needsCustomDecoder =
+      variant !== "wasm-player-p0" &&
+      probe.media.streams.some(
+        (stream) =>
+          stream.type === "video" &&
+          stream.codec === "h264" &&
+          (stream.width ?? 0) % 16 !== 0
+      ) &&
+      (await this.hasCustomVariant());
+    if (needsCustomDecoder) {
+      await demux.close().catch(() => demux.terminate());
+      demux = this.createDemuxClient();
+      this.demux = demux;
+      variant = "wasm-player-p0";
+      probe = await demux.open(workerSource as Parameters<DemuxWorkerClient["open"]>[0], {
+        name,
+        ...(this.libavBase ? { libavBase: this.libavBase } : {}),
+        libavVariant: variant,
+        libavThreads: "st"
+      });
+    }
     this.libavVariantUsed = variant;
     this.probe = probe;
     try {
@@ -396,8 +418,12 @@ export class BrowserMediaEngine implements MediaEngine {
       if (
         force.video === undefined &&
         variant === "wasm-player-p0" &&
-        isMatroskaFile(name) &&
-        probe.media.streams.some((stream) => stream.type === "video" && stream.codec === "h264")
+        probe.media.streams.some(
+          (stream) =>
+            stream.type === "video" &&
+            stream.codec === "h264" &&
+            (isMatroskaFile(name) || (stream.width ?? 0) % 16 !== 0)
+        )
       ) {
         // H.264 in Matroska is stored as Annex B/AVCC variants that Chrome's
         // WebCodecs decoder handles inconsistently; use the custom decoder.
@@ -1353,9 +1379,13 @@ export class BrowserMediaEngine implements MediaEngine {
         2,
         Math.min(12, Math.floor(VIDEO_QUEUE_LIMITS.maxBytes / estimatedFrameBytes))
       );
+      const queueEndUs = this.videoQueue.last()?.timestampUs;
+      const aheadOfPlayheadUs =
+        queueEndUs === undefined ? 0 : queueEndUs - this.currentMediaTime(nowSeconds());
       if (
         (paused && (videoBudget >= 8 || this.phase === "seeking")) ||
         (paused && !this.videoTrack && this.audioBufferedUs > 1_000_000) ||
+        (this.videoTrack !== null && aheadOfPlayheadUs > 1_000_000) ||
         this.videoQueue.size >= VIDEO_QUEUE_TARGET_FRAMES ||
         this.videoQueue.byteLength >= VIDEO_QUEUE_LIMITS.maxBytes ||
         this.videoPacketsInFlight >= maxInFlight ||
@@ -1435,14 +1465,17 @@ export class BrowserMediaEngine implements MediaEngine {
     } catch {
       byteLength = frame.codedWidth * frame.codedHeight * 4;
     }
-    const queued: QueuedVideoFrame = {
+    this.enqueueDecodedFrame({
       frame,
       timestampUs: frame.timestamp,
       durationUs: frame.duration ?? 0,
       byteLength
-    };
+    });
+  }
+
+  private enqueueDecodedFrame(queued: QueuedVideoFrame): void {
     const pushed = this.videoQueue.push(queued);
-    for (const dropped of pushed.dropped) dropped.frame.close();
+    for (const dropped of pushed.dropped) dropped.frame?.close();
     this.stats.videoQueueFrames = this.videoQueue.size;
     this.stats.videoQueueBytes = this.videoQueue.byteLength;
     this.stats.droppedVideoFrames = this.videoQueue.droppedFrames;
@@ -1454,15 +1487,15 @@ export class BrowserMediaEngine implements MediaEngine {
   ): void {
     if (epoch !== this.epoch || this.closed) return;
     for (const item of result.wasmVideoFrames) {
-      const frame = new VideoFrame(new Uint8ClampedArray(item.data), {
-        format: "RGBA",
-        codedWidth: item.width,
-        codedHeight: item.height,
-        timestamp: item.timestampUs,
-        duration: item.durationUs > 0 ? item.durationUs : 33_333,
-        layout: [{ offset: 0, stride: item.width * 4 }]
+      if (item.timestampUs < this.seekTargetUs - 1000) continue;
+      this.stats.decodedVideoFrames += 1;
+      const image = new ImageData(new Uint8ClampedArray(item.data), item.width, item.height);
+      this.enqueueDecodedFrame({
+        image,
+        timestampUs: item.timestampUs,
+        durationUs: item.durationUs > 0 ? item.durationUs : 33_333,
+        byteLength: item.data.byteLength
       });
-      this.onVideoFrame({ frame, epoch });
     }
     for (const chunk of result.wasmAudioChunks) {
       const channels = chunk.channels.map((buffer) => new Float32Array(buffer));
@@ -1591,8 +1624,12 @@ export class BrowserMediaEngine implements MediaEngine {
       if (due) this.previewFramePending = false;
     }
     if (due) {
-      this.renderer.render(due.frame);
-      due.frame.close();
+      if (due.frame) {
+        this.renderer.render(due.frame);
+        due.frame.close();
+      } else if (due.image) {
+        this.renderer.renderImage(due.image);
+      }
       this.stats.renderedFrames += 1;
     }
     const clamped = Math.max(0, Math.min(this.durationUs, mediaTime));
@@ -1772,7 +1809,7 @@ export class BrowserMediaEngine implements MediaEngine {
   }
 
   private clearVideoQueue(): void {
-    for (const queued of this.videoQueue.clear()) queued.frame.close();
+    for (const queued of this.videoQueue.clear()) queued.frame?.close();
     this.stats.videoQueueFrames = 0;
     this.stats.videoQueueBytes = 0;
   }

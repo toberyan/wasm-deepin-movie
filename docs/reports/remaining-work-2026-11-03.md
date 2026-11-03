@@ -1,7 +1,7 @@
 # Remaining Work Analysis
 
 Date: 2026-11-03. Baseline: `cee63d1` + current working tree.
-Evidence: 78 unit tests, 9 browser e2e tests, `pnpm check`, `pnpm build`.
+Evidence: 85 unit tests, 22 browser e2e tests, `pnpm check`, `pnpm build`.
 
 ## 0. Progress since the first audit
 
@@ -19,10 +19,12 @@ Completed in the current tree:
 - Picture pipeline adds hue, rotation, crop (engine contract), sharpness,
   nearest/bilinear scaling; audio adds gain with clipping protection and balance.
 - H.264 Matroska extradata is normalized to avcC for WebCodecs; the embedded
-  subtitle stream schema bug is fixed. H.264 MKV now routes through the custom
-  WASM decoder by default; first-frame timeout/decode failure triggers a
-  per-track WASM rebuild and the UI has a force-WASM reopen control. The
-  WebCodecs MKV path itself is still experimental.
+  subtitle stream schema bug is fixed. H.264 MKV routes through the custom WASM
+  decoder by default; cropped/non-16-aligned H.264 MP4 also reopens with the
+  custom decoder. WASM YUV420p frames are converted to RGBA instead of copying
+  non-RGBA frames through ImageData, fixing tiled/garbled output. First-frame
+  timeout/decode failure still triggers a per-track WASM rebuild and the UI has
+  a force-WASM reopen control.
 - Embedded SubRip/WebVTT/ASS packets are extracted before playback and rendered
   through the existing overlay/JASSUB path; Matroska font attachments are fed
   to JASSUB.
@@ -31,13 +33,9 @@ Completed in the current tree:
 - `?libavThreads=mt` now degrades to the ST artifact with a warning instead of
   failing. True MT remains blocked by the upstream libav.js 6.8.8 threaded
   build, which lacks struct accessors inside its Worker proxy.
-- Verification: 85 unit tests; 21 browser tests, all passing locally.
+- Verification: 85 unit tests; 22 browser tests, all passing locally.
 - Source read failures now release the pending AVIO read and surface a typed
   source error instead of hanging the demux worker.
-- Verification: 83 unit tests; 16 browser tests (one MT fixme, one conditional
-  skip). The threaded artifact still fails with
-  `AVFormatContext_nb_streams is not a function` when loaded in a Worker; it is
-  not a runtime-supported path yet.
 
 ## 1. Short conclusion
 
