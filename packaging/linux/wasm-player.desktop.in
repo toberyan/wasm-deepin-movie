@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=WASM Player
+Comment=Local-first WebAssembly video player
+Exec=@EXEC@
+Icon=@ICON@
+Terminal=false
+Categories=AudioVideo;Player;Video;
+StartupNotify=true
+StartupWMClass=WasmPlayer

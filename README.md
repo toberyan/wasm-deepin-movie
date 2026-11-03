@@ -58,6 +58,16 @@ The Companion binds loopback only, validates Host/Origin/token, brokers only
 explicitly allowed roots, and keeps MCP protocol output on stdout. See
 `docs/adr/0007-companion-security.md`.
 
+## Desktop package
+
+```bash
+bash packaging/linux/build-deb.sh
+sudo dpkg -i dist/wasm-player_0.1.0_all.deb
+```
+
+安装后从应用菜单启动 **WASM Player**。免 root 版本见
+`packaging/linux/README.md`。
+
 ## Checks
 
 ```bash
