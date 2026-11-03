@@ -119,6 +119,10 @@ function mediaSourceName(source: EngineMediaSource): string {
   return source.sourceId;
 }
 
+function isMatroskaFile(name: string): boolean {
+  return /\.(mkv|mka)$/i.test(name);
+}
+
 const LEGACY_CONTAINER_EXTENSIONS = new Set([
   "avi",
   "flv",
@@ -199,6 +203,8 @@ export class BrowserMediaEngine implements MediaEngine {
   private lastOpenRequest: OpenMediaRequest | null = null;
   private customVariantAvailable: boolean | null = null;
   private fallbackInProgress = false;
+  private opening = false;
+  private openingDecodeFailed = false;
   private threadFallbackWarning: string | null = null;
   private libavVariantUsed: string | undefined;
   private readonly onLog: ((message: string, details?: unknown) => void) | undefined;
@@ -282,6 +288,8 @@ export class BrowserMediaEngine implements MediaEngine {
     this.audioBufferedUs = 0;
     this.lastSubtitleText = "";
     this.threadFallbackWarning = null;
+    this.opening = true;
+    this.openingDecodeFailed = false;
     this.previewFramePending = true;
     this.epoch += 1;
     const epoch = this.epoch;
@@ -296,7 +304,8 @@ export class BrowserMediaEngine implements MediaEngine {
       request.preferCustomVariant === true ||
       this.libavVariant !== undefined ||
       (forcedWasm && (await this.hasCustomVariant())) ||
-      (isLegacyContainer(name) && (await this.hasCustomVariant()));
+      (isLegacyContainer(name) && (await this.hasCustomVariant())) ||
+      (isMatroskaFile(name) && (await this.hasCustomVariant()));
     let variant = preferCustom ? this.libavVariant ?? "wasm-player-p0" : undefined;
     let probe!: ProbeResult;
     let demux = this.createDemuxClient();
@@ -383,9 +392,18 @@ export class BrowserMediaEngine implements MediaEngine {
           support[key] = entry;
         }
       }
-      const routed = routeTracks(probe.media.streams, support, {
-        force: request.forceDecodePath
-      });
+      const force = { ...request.forceDecodePath };
+      if (
+        force.video === undefined &&
+        variant === "wasm-player-p0" &&
+        isMatroskaFile(name) &&
+        probe.media.streams.some((stream) => stream.type === "video" && stream.codec === "h264")
+      ) {
+        // H.264 in Matroska is stored as Annex B/AVCC variants that Chrome's
+        // WebCodecs decoder handles inconsistently; use the custom decoder.
+        force.video = "wasm";
+      }
+      const routed = routeTracks(probe.media.streams, support, { force });
       const preferredVideo = request.preferredTracks?.video;
       const preferredAudio = request.preferredTracks?.audio;
       const videoTrack =
@@ -569,9 +587,47 @@ export class BrowserMediaEngine implements MediaEngine {
       await this.loadAttachments();
       await this.loadEmbeddedSubtitles(probe);
       this.startPump();
-      if (videoTrack) await this.waitForFirstFrame(7000);
+      if (videoTrack) {
+        try {
+          await this.waitForFirstFrame(7000);
+        } catch (error) {
+          if (
+            !this.closed &&
+            !videoWasm &&
+            !this.fallbackInProgress &&
+            (await this.hasCustomVariant())
+          ) {
+            const selected = { ...this.selected };
+            this.warnings.push("video first-frame timeout; attempting WASM fallback");
+            this.fallbackInProgress = true;
+            try {
+              const result = await this.open({
+                ...request,
+                preferCustomVariant: true,
+                forceDecodePath: { ...request.forceDecodePath, video: "wasm" },
+                preferredTracks: {
+                  ...request.preferredTracks,
+                  ...(selected.video !== null ? { video: selected.video } : {}),
+                  ...(selected.audio !== null ? { audio: selected.audio } : {})
+                },
+                startPositionUs: request.startPositionUs ?? 0,
+                autoPlay: request.autoPlay
+              });
+              this.warnings.push(
+                "video WebCodecs produced no frame; switched to the custom WASM decoder"
+              );
+              this.opening = false;
+              return result;
+            } finally {
+              this.fallbackInProgress = false;
+            }
+          }
+          throw error;
+        }
+      }
       if (request.autoPlay) await this.play();
 
+      this.opening = false;
       return {
         media: this.media!,
         tracks: this.tracks,
@@ -580,6 +636,7 @@ export class BrowserMediaEngine implements MediaEngine {
         warnings: [...this.warnings]
       };
     } catch (error) {
+      this.opening = false;
       await this.close();
       throw error;
     }
@@ -1446,6 +1503,10 @@ export class BrowserMediaEngine implements MediaEngine {
   private onDecodeError(error: PlayerError, epoch: number, track: "video" | "audio"): void {
     if (epoch !== this.epoch || this.closed) return;
     if (this.fallbackInProgress) return;
+    if (track === "video" && this.opening && !this.videoWasm) {
+      this.openingDecodeFailed = true;
+      return;
+    }
     if (track === "video" && !this.videoWasm) {
       void this.fallbackVideoToWasm(error);
       return;
@@ -1697,6 +1758,9 @@ export class BrowserMediaEngine implements MediaEngine {
   private async waitForFirstFrame(timeoutMs: number): Promise<void> {
     const deadline = performance.now() + timeoutMs;
     while (this.videoQueue.size === 0 && this.stats.renderedFrames === 0) {
+      if (this.openingDecodeFailed) {
+        throw new PlayerError("DECODE_FAILED", "video decoder failed while opening");
+      }
       if (this.closed) throw new PlayerError("CANCELLED", "media closed while opening");
       if (performance.now() >= deadline) {
         throw new PlayerError("TIMEOUT", "timed out waiting for the first video frame", {

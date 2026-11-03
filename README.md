@@ -126,9 +126,10 @@ Not yet delivered:
   extracted and rendered.
 - HDR/WebGPU, HLS/DASH, 10-bit/tone mapping; full compatibility matrix and
   Windows/macOS runners.
-- H.264 Matroska WebCodecs remains flaky in this Chrome build; per-track runtime
-  fallback and an explicit force-WASM UI are implemented, but the WebCodecs MKV
-  path itself is still marked experimental.
+- H.264 Matroska is routed through the custom WASM decoder by default because
+  Chrome's WebCodecs path is flaky; per-track runtime fallback and an explicit
+  force-WASM UI remain available for other sources. The WebCodecs MKV path is
+  still marked experimental.
 - Desktop shell (P4).
 
 ## Custom WASM fallback

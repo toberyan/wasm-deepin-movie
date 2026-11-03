@@ -816,6 +816,40 @@ test("reopens the current file through the force-WASM UI", async ({ page }) => {
   });
 });
 
+test("recovers H.264 MKV WebCodecs failures automatically", async ({ page }) => {
+  test.setTimeout(120_000);
+  const data = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac-subs.mkv"));
+  await page.route("**/fixtures/sample-h264-aac-subs.mkv", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "video/x-matroska", "Access-Control-Allow-Origin": "*" },
+      body: data
+    })
+  );
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const opened = await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-h264-aac-subs.mkv")).arrayBuffer();
+    const file = new File([bytes], "sample-h264-aac-subs.mkv", { type: "video/x-matroska" });
+    return player.invoke({
+      requestId: `mkv-auto-open-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: { source: { kind: "file", file, name: "sample-h264-aac-subs.mkv" } }
+    });
+  });
+  if (opened.status !== "applied") throw new Error(JSON.stringify(opened.error));
+  await waitForMedia(page);
+  const snapshot = await state(page);
+  expect(snapshot.media?.decodePaths["video:0"]).toBe("wasm");
+  await page.waitForFunction(() => {
+    const current = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(current && current.stats.renderedFrames > 0);
+  });
+});
+
 test("opens H.264 MKV through the custom WASM decoder", async ({ page }) => {
   test.skip(!customVariantAvailable, "custom wasm-player-p0 artifacts are not built");
   const data = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac-subs.mkv"));

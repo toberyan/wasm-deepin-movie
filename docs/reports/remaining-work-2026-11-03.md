@@ -19,9 +19,10 @@ Completed in the current tree:
 - Picture pipeline adds hue, rotation, crop (engine contract), sharpness,
   nearest/bilinear scaling; audio adds gain with clipping protection and balance.
 - H.264 Matroska extradata is normalized to avcC for WebCodecs; the embedded
-  subtitle stream schema bug is fixed. WebCodecs failure now triggers a
-  per-track rebuild through the custom WASM decoder, and the UI has a
-  force-WASM reopen control. The WebCodecs MKV path itself is still experimental.
+  subtitle stream schema bug is fixed. H.264 MKV now routes through the custom
+  WASM decoder by default; first-frame timeout/decode failure triggers a
+  per-track WASM rebuild and the UI has a force-WASM reopen control. The
+  WebCodecs MKV path itself is still experimental.
 - Embedded SubRip/WebVTT/ASS packets are extracted before playback and rendered
   through the existing overlay/JASSUB path; Matroska font attachments are fed
   to JASSUB.
@@ -30,7 +31,7 @@ Completed in the current tree:
 - `?libavThreads=mt` now degrades to the ST artifact with a warning instead of
   failing. True MT remains blocked by the upstream libav.js 6.8.8 threaded
   build, which lacks struct accessors inside its Worker proxy.
-- Verification: 85 unit tests; 20 browser tests, all passing locally.
+- Verification: 85 unit tests; 21 browser tests, all passing locally.
 - Source read failures now release the pending AVIO read and surface a typed
   source error instead of hanging the demux worker.
 - Verification: 83 unit tests; 16 browser tests (one MT fixme, one conditional
