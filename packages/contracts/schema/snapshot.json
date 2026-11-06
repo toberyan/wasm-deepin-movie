@@ -150,6 +150,62 @@
         "minimum": 0,
         "type": "integer"
       },
+      "jobs": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "jobId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "progress": {
+              "additionalProperties": false,
+              "properties": {
+                "completed": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "completed",
+                "total"
+              ],
+              "type": "object"
+            },
+            "status": {
+              "enum": [
+                "accepted",
+                "running",
+                "applied",
+                "failed",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            "updatedAt": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "jobId",
+            "action",
+            "status",
+            "updatedAt"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
       "media": {
         "anyOf": [
           {
@@ -821,6 +877,7 @@
       "tracks",
       "selected",
       "playlistIndex",
+      "jobs",
       "positionUs",
       "durationUs",
       "rate",

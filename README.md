@@ -148,11 +148,23 @@ Working and verified:
   ASS/SSA tracks (`subtitle.forceStyle`).
 - Film-info dialog, single-frame screenshot, 15-frame storyboard capture,
   frame-step and 0.1x speed shortcuts, pause-when-hidden.
+- Storyboards are built by an independent sampler (`storyboard.create`) with its
+  own engine and offscreen canvas: playback is never paused or seeked. The job
+  is bound to a media generation counter, so opening, closing or re-opening a
+  file (including A -> B -> A) cancels it and no late result is published;
+  progress is published in `snapshot.jobs`, and cancelling aborts the sampler.
+  Storyboard tiles carry timestamps but no subtitles or picture filters, and a
+  4K source still costs full-resolution decode (see the limits below).
 - HTTP Range e2e, 5 GiB sparse offsets, 100 open/close cycles, MCP Companion,
   typed Agent SDK.
 - Request handling is concurrency-safe: duplicate request ids share one
   in-flight execution, every state-changing action runs through a serial queue
   and `expectedRevision` is checked at execution time (not submission time).
+- The controller publishes one cached, immutable-by-convention snapshot for UI
+  subscriptions (`getSnapshot`/`subscribeSnapshot`) while `getState()` keeps its
+  defensive deep copy. Unchanged settings and job lists keep stable references,
+  and the app shell subscribes without the playhead/stats so only the leaf
+  clock, progress and stats components re-render on playback updates.
 - Storage writes survive a failed write instead of poisoning the queue, and a
   save resolves only when the IndexedDB transaction commits. Expired video
   frames are released through the frame queue, audio buffer stats come from the

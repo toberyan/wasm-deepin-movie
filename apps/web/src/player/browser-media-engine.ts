@@ -89,6 +89,11 @@ interface QueuedVideoFrame {
 export interface BrowserMediaEngineOptions {
   canvas: HTMLCanvasElement;
   overlayContainer: HTMLElement;
+  /**
+   * Sampling-only instance: no audio output, attachments or embedded subtitle
+   * extraction. Used by the storyboard sampler so it cannot disturb playback.
+   */
+  sampling?: boolean;
   libavBase?: string;
   libavVariant?: string;
   libavThreads?: "st" | "mt";
@@ -200,6 +205,7 @@ function settingDefault<T>(id: SettingId): T {
 export class BrowserMediaEngine implements MediaEngine {
   readonly id = "browser-webcodecs";
   private readonly canvas: HTMLCanvasElement;
+  private readonly sampling: boolean;
   private readonly renderer: WebGL2Renderer;
   private readonly overlay: SubtitleOverlay;
   private readonly overlayContainer: HTMLElement;
@@ -287,6 +293,7 @@ export class BrowserMediaEngine implements MediaEngine {
 
   constructor(options: BrowserMediaEngineOptions) {
     this.canvas = options.canvas;
+    this.sampling = options.sampling === true;
     this.libavBase = options.libavBase;
     this.libavVariant = options.libavVariant;
     this.libavThreads = options.libavThreads ?? "st";
@@ -563,6 +570,13 @@ export class BrowserMediaEngine implements MediaEngine {
         }
       }
 
+      if (selectedAudio && this.sampling) {
+        // A sampler never renders audio: skip decoder and worklet startup.
+        this.selected.audio = null;
+        this.audioTrack = null;
+        selectedAudio = null;
+      }
+
       if (selectedAudio) {
         const config = probe.configs[selectedAudio.index];
         if (!audioWasm && config && config.type === "audio") {
@@ -647,8 +661,10 @@ export class BrowserMediaEngine implements MediaEngine {
       } else {
         this.seekTargetUs = 0;
       }
-      await this.loadAttachments();
-      await this.loadEmbeddedSubtitles(probe);
+      if (!this.sampling) {
+        await this.loadAttachments();
+        await this.loadEmbeddedSubtitles(probe);
+      }
       this.startPump();
       if (videoTrack) {
         try {

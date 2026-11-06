@@ -16,6 +16,7 @@ import {
   bookmarksAddInputSchema,
   bookmarksRemoveInputSchema,
   captureCreateInputSchema,
+  storyboardCreateInputSchema,
   configImportInputSchema,
   eventsReadInputSchema,
   historyListInputSchema,
@@ -65,6 +66,7 @@ import {
   type SettingLayer,
   type SettingScope,
   type SettingsPatch,
+  type JobSummary,
   type TrackInfo,
   type TrackType
 } from "@wasm-player/contracts";
@@ -72,9 +74,12 @@ import type {
   CaptureOptions,
   EngineEvent,
   EngineMediaSource,
+  FrameSampler,
+  FrameSamplerFactory,
   MediaEngine,
   MediaOpenResult
 } from "@wasm-player/media-engine";
+import { isFinishedJob, jobSummary, pruneJobs, type JobLimits, type JobRecord } from "./jobs";
 
 export interface PlayerHost {
   fullscreen?(enabled: boolean): Promise<void>;
@@ -83,14 +88,7 @@ export interface PlayerHost {
   saveFile?(params?: Record<string, unknown>): Promise<void>;
 }
 
-export interface JobRetentionOptions {
-  /** Finished jobs kept in memory. Defaults to 32. */
-  maxEntries?: number;
-  /** Total bytes of capture results kept in memory. Defaults to 128 MiB. */
-  maxBytes?: number;
-  /** How long a finished job stays queryable. Defaults to 10 minutes. */
-  ttlMs?: number;
-}
+export type JobRetentionOptions = Partial<JobLimits>;
 
 export interface PlayerControllerOptions {
   engine: MediaEngine;
@@ -102,16 +100,11 @@ export interface PlayerControllerOptions {
   maxDedupEntries?: number;
   storage?: PlayerStorage;
   jobRetention?: JobRetentionOptions;
-}
-
-interface JobRecord {
-  jobId: string;
-  action: ActionId;
-  status: "accepted" | "running" | "applied" | "failed" | "cancelled";
-  createdAt: number;
-  updatedAt: number;
-  result?: unknown;
-  error?: PlayerErrorShape;
+  /**
+   * Opens an independent frame sampler. Without it `storyboard.create` reports
+   * UNSUPPORTED instead of disturbing the playing engine.
+   */
+  frameSampler?: FrameSamplerFactory;
 }
 
 interface HandlerResult {
@@ -230,7 +223,22 @@ export class PlayerController {
   private readonly jobs = new Map<string, JobRecord>();
   private readonly jobBlobs = new Map<string, Blob>();
   private readonly jobRetention: Required<JobRetentionOptions>;
+  private readonly jobAborts = new Map<string, AbortController>();
+  private readonly frameSampler: FrameSamplerFactory | undefined;
   private jobSeq = 0;
+
+  /**
+   * Bumped on every open/close so background work can tell "same media" from
+   * "same file re-opened": A -> B -> A still invalidates the first A task.
+   */
+  private mediaGeneration = 0;
+  private currentSource: MediaSourceInput | null = null;
+
+  private snapshotCache: PlayerSnapshot | null = null;
+  private readonly snapshotListeners = new Set<() => void>();
+  /** Reused sub-objects so unchanged slices keep a stable reference. */
+  private cachedSettings: Record<string, EffectiveValue> | null = null;
+  private cachedJobs: JobSummary[] = [];
 
   private eventSeq = 0;
   private events: PlayerEvent[] = [];
@@ -269,14 +277,38 @@ export class PlayerController {
       maxBytes: options.jobRetention?.maxBytes ?? 128 * 1024 * 1024,
       ttlMs: options.jobRetention?.ttlMs ?? 10 * 60 * 1000
     };
+    this.frameSampler = options.frameSampler;
     this.capabilities = this.engine.getCapabilities();
     for (const id of SETTING_IDS) this.effective.set(id, emptyEffective(id));
     this.unsubscribeEngine = this.engine.subscribe((event) => this.onEngineEvent(event));
     this.ready = this.restoreState();
   }
 
+  /**
+   * Public state read. Keeps the defensive-copy contract: callers may mutate the
+   * result without touching the controller.
+   */
   getState(): PlayerSnapshot {
-    const snapshot: PlayerSnapshot = {
+    return structuredClone(this.getSnapshot());
+  }
+
+  /**
+   * Cached, immutable-by-convention snapshot for UI subscriptions. The same
+   * object is returned until the controller publishes a change, so
+   * `useSyncExternalStore` can compare references cheaply.
+   */
+  getSnapshot(): PlayerSnapshot {
+    if (!this.snapshotCache) this.snapshotCache = this.buildSnapshot();
+    return this.snapshotCache;
+  }
+
+  subscribeSnapshot(listener: () => void): () => void {
+    this.snapshotListeners.add(listener);
+    return () => this.snapshotListeners.delete(listener);
+  }
+
+  private buildSnapshot(): PlayerSnapshot {
+    return {
       sessionId: this.sessionId,
       phase: this.phase,
       revision: this.revision,
@@ -285,19 +317,66 @@ export class PlayerController {
       tracks: this.tracks,
       selected: this.selected,
       playlistIndex: this.currentPlaylistIndex,
+      jobs: this.jobsSnapshot(),
       positionUs: this.positionUs,
       durationUs: this.durationUs,
       rate: this.rate,
       volume: this.volume,
       muted: this.muted,
       buffering: this.buffering,
-      settings: Object.fromEntries(this.effective),
+      settings: this.settingsSnapshot(),
       capabilities: this.capabilities,
       error: this.error,
       stats: this.stats,
       updatedAt: this.now()
     };
-    return structuredClone(snapshot);
+  }
+
+  /** Rebuild the settings map only when a setting actually changed. */
+  private settingsSnapshot(): Record<string, EffectiveValue> {
+    const previous = this.cachedSettings;
+    if (previous && Object.keys(previous).length === this.effective.size) {
+      let unchanged = true;
+      for (const [id, value] of this.effective) {
+        if (previous[id] !== value) {
+          unchanged = false;
+          break;
+        }
+      }
+      if (unchanged) return previous;
+    }
+    this.cachedSettings = Object.fromEntries(this.effective);
+    return this.cachedSettings;
+  }
+
+  /** Rebuild the job list only when a job record actually changed. */
+  private jobsSnapshot(): JobSummary[] {
+    const next = [...this.jobs.values()].map(jobSummary);
+    const previous = this.cachedJobs;
+    if (
+      next.length === previous.length &&
+      next.every((job, index) => {
+        const other = previous[index];
+        return (
+          other !== undefined &&
+          other.jobId === job.jobId &&
+          other.status === job.status &&
+          other.updatedAt === job.updatedAt &&
+          other.progress?.completed === job.progress?.completed &&
+          other.progress?.total === job.progress?.total
+        );
+      })
+    ) {
+      return previous;
+    }
+    this.cachedJobs = next;
+    return next;
+  }
+
+  /** Invalidates the cached snapshot and wakes UI subscribers. */
+  private publish(): void {
+    this.snapshotCache = null;
+    for (const listener of this.snapshotListeners) listener();
   }
 
   subscribe(listener: (event: PlayerEvent) => void): () => void {
@@ -377,6 +456,9 @@ export class PlayerController {
     }
     this.unsubscribeEngine();
     this.listeners.clear();
+    this.snapshotListeners.clear();
+    for (const controller of this.jobAborts.values()) controller.abort();
+    this.jobAborts.clear();
     this.jobs.clear();
     this.jobBlobs.clear();
     const previous = this.phase;
@@ -745,6 +827,8 @@ export class PlayerController {
         return this.cancelJob(jobsInputSchema.parse(params).jobId);
       case ACTION_IDS.captureCreate:
         return this.createCaptureJob(captureCreateInputSchema.parse(params), now);
+      case ACTION_IDS.storyboardCreate:
+        return this.createStoryboardJob(storyboardCreateInputSchema.parse(params), now);
       case ACTION_IDS.uiSet:
         return this.setUi(uiSetInputSchema.parse(params));
       case ACTION_IDS.hostRequest:
@@ -832,6 +916,9 @@ export class PlayerController {
     preferredTracks?: Partial<Record<TrackType, number>>;
     fromPlaylist?: boolean;
   }): Promise<HandlerResult> {
+    // Any open invalidates background work bound to the previous media
+    // session, including a re-open of the same file.
+    this.invalidateMediaSession();
     // Opening a playlist entry always sets the index; opening the same file
     // directly makes the entry it belongs to current, so the UI and the
     // previous/next commands follow the media that is actually playing.
@@ -845,6 +932,7 @@ export class PlayerController {
     });
     if (!input.fromPlaylist) this.currentPlaylistIndex = linked;
     this.currentMediaKey = this.currentSourceKey(input.source);
+    this.currentSource = input.source;
     this.layers.media.clear();
     this.applyOpenResult(result);
     await this.syncSettingsToEngine("session");
@@ -873,6 +961,7 @@ export class PlayerController {
   }
 
   private async closeMedia(): Promise<HandlerResult> {
+    this.invalidateMediaSession();
     this.currentPlaylistIndex = null;
     this.currentMediaKey = undefined;
     this.updateHistoryPosition();
@@ -1289,6 +1378,11 @@ export class PlayerController {
     if (job.status === "accepted" || job.status === "running") {
       job.status = "cancelled";
       job.updatedAt = this.now();
+      // Aborting is what actually stops a running sampler; the status alone
+      // would let it keep decoding and publish a result later.
+      this.jobAborts.get(jobId)?.abort();
+      this.jobAborts.delete(jobId);
+      this.jobBlobs.delete(jobId);
       this.emitEvent("jobUpdated", { jobId, status: "cancelled" });
     }
     return {
@@ -1351,6 +1445,155 @@ export class PlayerController {
     }
   }
 
+  private createStoryboardJob(
+    options: z.infer<typeof storyboardCreateInputSchema>,
+    now: number
+  ): HandlerResult {
+    if (!this.frameSampler) {
+      throw new PlayerError("UNSUPPORTED", "this host cannot sample frames for a storyboard");
+    }
+    const running = [...this.jobs.values()].some(
+      (job) =>
+        job.action === ACTION_IDS.storyboardCreate &&
+        (job.status === "accepted" || job.status === "running")
+    );
+    if (running) throw new PlayerError("BUSY", "a storyboard job is already running");
+    if (!this.currentSource) {
+      throw new PlayerError("NEEDS_MEDIA", "storyboard.create requires an open media");
+    }
+    this.pruneJobs(now);
+    this.jobSeq += 1;
+    const jobId = `job-${this.jobSeq}`;
+    const job: JobRecord = {
+      jobId,
+      action: ACTION_IDS.storyboardCreate,
+      status: "accepted",
+      createdAt: now,
+      updatedAt: now
+    };
+    this.jobs.set(jobId, job);
+    const controller = new AbortController();
+    this.jobAborts.set(jobId, controller);
+    // Background work, deliberately outside the serial mutation queue: the
+    // caller gets the job id immediately and playback keeps running.
+    void this.runStoryboardJob(jobId, this.currentSource, options, this.mediaGeneration, controller.signal);
+    return {
+      status: "accepted",
+      jobId,
+      output: { jobId, status: "accepted" },
+      bumpRevision: false,
+      events: [{ type: "jobUpdated", payload: { jobId, status: "accepted" } }]
+    };
+  }
+
+  private async runStoryboardJob(
+    jobId: string,
+    source: MediaSourceInput,
+    options: z.infer<typeof storyboardCreateInputSchema>,
+    generation: number,
+    signal: AbortSignal
+  ): Promise<void> {
+    const job = this.jobs.get(jobId);
+    if (!job) return;
+    job.status = "running";
+    job.updatedAt = this.now();
+    this.emitEvent("jobUpdated", { jobId, status: "running" });
+    let sampler: FrameSampler | null = null;
+    const stale = (): boolean => signal.aborted || generation !== this.mediaGeneration;
+    try {
+      sampler = await this.frameSampler!(this.engineSource(source), {
+        ...(options.trackIndex !== undefined ? { trackIndex: options.trackIndex } : {})
+      });
+      if (stale()) {
+        this.markJobCancelled(jobId);
+        return;
+      }
+      const durationUs = sampler.info.durationUs;
+      if (durationUs <= 0) {
+        throw new PlayerError("INVALID_REQUEST", "storyboard needs a media with a known duration");
+      }
+      const positionsUs = Array.from({ length: options.count }, (_, index) =>
+        Math.min(
+          Math.max(0, durationUs - 1),
+          Math.round((durationUs * (index + 0.5)) / options.count)
+        )
+      );
+      const sampled = await sampler.storyboard({
+        positionsUs,
+        columns: options.columns,
+        tileWidth: options.tileWidth,
+        tileHeight: options.tileHeight,
+        ...(options.quality !== undefined ? { quality: options.quality } : {}),
+        signal,
+        onProgress: (completed, total) => {
+          const current = this.jobs.get(jobId);
+          if (!current || current.status === "cancelled" || stale()) return;
+          current.progress = { completed, total };
+          current.updatedAt = this.now();
+          this.emitEvent("jobUpdated", { jobId, status: "running", progress: current.progress });
+        }
+      });
+      if (stale()) {
+        this.markJobCancelled(jobId);
+        return;
+      }
+      const latest = this.jobs.get(jobId);
+      if (!latest || latest.status === "cancelled") return;
+      latest.status = "applied";
+      latest.updatedAt = this.now();
+      latest.progress = { completed: options.count, total: options.count };
+      latest.result = {
+        mimeType: sampled.blob.type,
+        width: sampled.width,
+        height: sampled.height,
+        count: options.count
+      };
+      this.jobBlobs.set(jobId, sampled.blob);
+      this.pruneJobs();
+      this.emitEvent("jobUpdated", { jobId, status: "applied", result: latest.result });
+    } catch (error) {
+      if (stale() || (error instanceof Error && error.name === "AbortError")) {
+        this.markJobCancelled(jobId);
+        return;
+      }
+      const latest = this.jobs.get(jobId);
+      if (!latest || latest.status === "cancelled") return;
+      latest.status = "failed";
+      latest.updatedAt = this.now();
+      latest.error = toPlayerError(error).toJSON();
+      this.emitEvent("jobUpdated", { jobId, status: "failed", error: latest.error });
+    } finally {
+      this.jobAborts.delete(jobId);
+      if (sampler) await sampler.close().catch(() => undefined);
+    }
+  }
+
+  /** Mark a job cancelled and drop anything it may have produced. */
+  private markJobCancelled(jobId: string): void {
+    const job = this.jobs.get(jobId);
+    if (!job || job.status === "cancelled" || job.status === "failed") return;
+    this.jobAborts.get(jobId)?.abort();
+    this.jobAborts.delete(jobId);
+    this.jobBlobs.delete(jobId);
+    job.status = "cancelled";
+    job.updatedAt = this.now();
+    this.emitEvent("jobUpdated", { jobId, status: "cancelled" });
+  }
+
+  /**
+   * Invalidate background work whenever the media session changes. A new open,
+   * a close or a re-open of the same file all bump the generation, so A -> B -> A
+   * cannot revive the old task.
+   */
+  private invalidateMediaSession(): void {
+    this.mediaGeneration += 1;
+    this.currentSource = null;
+    for (const [jobId, job] of this.jobs) {
+      if (job.action !== ACTION_IDS.storyboardCreate) continue;
+      if (job.status === "accepted" || job.status === "running") this.markJobCancelled(jobId);
+    }
+  }
+
   getJobBlob(jobId: string): Blob | undefined {
     return this.jobBlobs.get(jobId);
   }
@@ -1362,44 +1605,13 @@ export class PlayerController {
   releaseJob(jobId: string): boolean {
     const hadBlob = this.jobBlobs.delete(jobId);
     const job = this.jobs.get(jobId);
-    const removable = job !== undefined && this.isFinishedJob(job);
+    const removable = job !== undefined && isFinishedJob(job);
     if (removable) this.jobs.delete(jobId);
     return hadBlob || removable;
   }
 
-  private isFinishedJob(job: JobRecord): boolean {
-    return job.status === "applied" || job.status === "failed" || job.status === "cancelled";
-  }
-
-  /**
-   * Captures are the only unbounded results the controller keeps: evict expired
-   * jobs and, when over the entry or byte budget, the oldest finished ones.
-   * Running jobs are never evicted mid-flight.
-   */
   private pruneJobs(now = this.now()): void {
-    for (const [jobId, job] of this.jobs) {
-      if (!this.isFinishedJob(job)) continue;
-      if (now - job.updatedAt > this.jobRetention.ttlMs) {
-        this.jobs.delete(jobId);
-        this.jobBlobs.delete(jobId);
-      }
-    }
-    let bytes = 0;
-    for (const blob of this.jobBlobs.values()) bytes += blob.size;
-    const finished = [...this.jobs.values()]
-      .filter((job) => this.isFinishedJob(job))
-      .sort((left, right) => left.updatedAt - right.updatedAt);
-    for (const job of finished) {
-      const overEntries = this.jobs.size > this.jobRetention.maxEntries;
-      const overBytes = bytes > this.jobRetention.maxBytes;
-      if (!overEntries && !overBytes) break;
-      const blob = this.jobBlobs.get(job.jobId);
-      if (blob) {
-        bytes -= blob.size;
-        this.jobBlobs.delete(job.jobId);
-      }
-      this.jobs.delete(job.jobId);
-    }
+    pruneJobs(this.jobs, this.jobBlobs, this.jobRetention, now);
   }
 
   private jobStatus(job: JobRecord): Record<string, unknown> {
@@ -1410,6 +1622,7 @@ export class PlayerController {
       createdAt: job.createdAt,
       updatedAt: job.updatedAt
     };
+    if (job.progress) output.progress = job.progress;
     if (job.result !== undefined) output.result = job.result;
     if (job.error !== undefined) output.error = job.error;
     return output;
@@ -1841,6 +2054,9 @@ export class PlayerController {
         break;
       }
       case "mediaClosed": {
+        // A close that did not come from media.close (for example a failed open)
+        // must still invalidate sampler jobs tied to the old session.
+        this.invalidateMediaSession();
         this.media = null;
         this.currentMediaKey = undefined;
         this.tracks = [];
@@ -1912,6 +2128,9 @@ export class PlayerController {
   }
 
   private emitEvent(type: PlayerEventType, payload: unknown): void {
+    // Any state change that emits an event also refreshes the cached snapshot,
+    // so UI subscribers never read a stale position, stats or job progress.
+    this.publish();
     this.eventSeq += 1;
     const event: PlayerEvent = {
       seq: this.eventSeq,

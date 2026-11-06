@@ -77,6 +77,7 @@ export const ACTION_IDS = {
   jobsGet: "jobs.get",
   jobsCancel: "jobs.cancel",
   captureCreate: "capture.create",
+  storyboardCreate: "storyboard.create",
   uiSet: "ui.set",
   hostRequest: "host.request",
   sessionsList: "sessions.list",
@@ -315,6 +316,13 @@ export const eventsReadOutputSchema = z
 
 export const jobsInputSchema = z.object({ jobId: z.string().min(1) }).strict();
 
+export const jobProgressSchema = z
+  .object({
+    completed: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative()
+  })
+  .strict();
+
 export const jobStatusSchema = z
   .object({
     jobId: z.string().min(1),
@@ -322,6 +330,7 @@ export const jobStatusSchema = z
     status: z.enum(["accepted", "running", "applied", "failed", "cancelled"]),
     createdAt: z.number(),
     updatedAt: z.number(),
+    progress: jobProgressSchema.optional(),
     result: z.unknown().optional(),
     error: playerErrorSchema.optional()
   })
@@ -339,6 +348,19 @@ export const captureCreateInputSchema = z
 export const captureJobOutputSchema = z
   .object({ jobId: z.string().min(1), status: z.literal("accepted") })
   .strict();
+
+export const storyboardCreateInputSchema = z
+  .object({
+    count: z.number().int().min(1).max(30).default(15),
+    columns: z.number().int().min(1).max(10).default(5),
+    tileWidth: z.number().int().min(64).max(512).default(256),
+    tileHeight: z.number().int().min(36).max(288).default(144),
+    quality: z.number().min(0.1).max(1).optional(),
+    trackIndex: z.number().int().nonnegative().optional()
+  })
+  .strict();
+
+export const storyboardJobOutputSchema = captureJobOutputSchema;
 
 export const uiSetInputSchema = z
   .object({

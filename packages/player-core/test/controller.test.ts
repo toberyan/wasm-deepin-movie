@@ -9,7 +9,13 @@ import {
   type PlayerEvent,
   type PlayerStorage
 } from "@wasm-player/contracts";
-import { FakeMediaEngine } from "@wasm-player/media-engine";
+import {
+  FakeMediaEngine,
+  type FrameSampler,
+  type FrameSamplerFactory,
+  type FrameSamplerInfo,
+  type StoryboardSampleRequest
+} from "@wasm-player/media-engine";
 import { PlayerController, type PlayerHost } from "../src/index";
 
 /**
@@ -54,12 +60,21 @@ function playlistNames(output: unknown): string[] {
 }
 
 function createController(host?: PlayerHost, storage?: PlayerStorage) {
+  return createControllerWithSampler(undefined, host, storage);
+}
+
+function createControllerWithSampler(
+  frameSampler?: FrameSamplerFactory,
+  host?: PlayerHost,
+  storage?: PlayerStorage
+) {
   const engine = new FakeMediaEngine();
   const controller = new PlayerController({
     engine,
     sessionId: "test-session",
     host,
     storage,
+    ...(frameSampler ? { frameSampler } : {}),
     now: () => 1_700_000_000_000
   });
   let requestSeq = 0;
@@ -85,6 +100,69 @@ function createController(host?: PlayerHost, storage?: PlayerStorage) {
     return controller.invoke(request);
   };
   return { controller, engine, invoke };
+}
+
+class FakeSampler implements FrameSampler {
+  readonly info: FrameSamplerInfo = {
+    durationUs: 10_000_000,
+    width: 640,
+    height: 360,
+    trackIndex: 0
+  };
+  progressCalls = 0;
+  closed = false;
+
+  constructor(private readonly behaviour: { delayMs?: number; fail?: boolean } = {}) {}
+
+  async storyboard(
+    request: StoryboardSampleRequest
+  ): Promise<{ blob: Blob; width: number; height: number }> {
+    for (let index = 0; index < request.positionsUs.length; index += 1) {
+      if (request.signal.aborted) throw abortError();
+      if (this.behaviour.fail) throw new Error("sampler failed");
+      await new Promise((resolve) => setTimeout(resolve, this.behaviour.delayMs ?? 1));
+      if (request.signal.aborted) throw abortError();
+      this.progressCalls += 1;
+      request.onProgress?.(index + 1, request.positionsUs.length);
+    }
+    return {
+      blob: new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }),
+      width: 320,
+      height: 180
+    };
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+}
+
+function abortError(): Error {
+  const error = new Error("cancelled");
+  error.name = "AbortError";
+  return error;
+}
+
+async function waitForJobStatus(
+  controller: PlayerController,
+  jobId: string,
+  status: string
+): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const job = controller.getSnapshot().jobs.find((entry) => entry.jobId === jobId);
+    if (job?.status === status) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`job ${jobId} did not reach ${status}`);
+}
+
+async function waitForJobProgress(controller: PlayerController, jobId: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const job = controller.getSnapshot().jobs.find((entry) => entry.jobId === jobId);
+    if (job?.progress && job.progress.completed > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`job ${jobId} produced no progress`);
 }
 
 async function open(controller: PlayerController, request: (action: ActionId, params?: Record<string, unknown>, expectedRevision?: number) => Promise<InvokeResult>, autoPlay = false) {
@@ -470,6 +548,115 @@ describe("PlayerController", () => {
     // Only the winning write took effect.
     const listed = await pair.invoke(ACTION_IDS.bookmarksList);
     expect((listed.output as { items: unknown[] }).items).toHaveLength(1);
+  });
+
+  it("runs storyboards in the background and publishes progress", async () => {
+    const samplers: FakeSampler[] = [];
+    const factory: FrameSamplerFactory = async () => {
+      const sampler = new FakeSampler({ delayMs: 2 });
+      samplers.push(sampler);
+      return sampler;
+    };
+    const pair = createControllerWithSampler(factory);
+    await open(pair.controller, pair.invoke);
+    const accepted = await pair.invoke(ACTION_IDS.storyboardCreate, { count: 4 });
+    expect(accepted.status).toBe("accepted");
+    const jobId = accepted.jobId as string;
+    expect(jobId).toBeTruthy();
+
+    const seen: number[] = [];
+    const unsubscribe = pair.controller.subscribeSnapshot(() => {
+      const job = pair.controller.getSnapshot().jobs.find((entry) => entry.jobId === jobId);
+      if (job?.progress) seen.push(job.progress.completed);
+    });
+    await waitForJobStatus(pair.controller, jobId, "applied");
+    unsubscribe();
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.at(-1)).toBe(4);
+    expect(pair.controller.getJobBlob(jobId)).toBeDefined();
+    expect(pair.controller.getSnapshot().jobs[0]).toMatchObject({
+      jobId,
+      status: "applied",
+      progress: { completed: 4, total: 4 }
+    });
+    expect(samplers).toHaveLength(1);
+    await pair.controller.dispose();
+  });
+
+  it("cancels a running storyboard and stops sampling", async () => {
+    const sampler = new FakeSampler({ delayMs: 20 });
+    const pair = createControllerWithSampler(async () => sampler);
+    await open(pair.controller, pair.invoke);
+    const accepted = await pair.invoke(ACTION_IDS.storyboardCreate, { count: 10 });
+    const jobId = accepted.jobId as string;
+    await waitForJobProgress(pair.controller, jobId);
+
+    const cancelled = await pair.invoke(ACTION_IDS.jobsCancel, { jobId });
+    expect(cancelled.status).toBe("applied");
+    const completedAtCancel = sampler.progressCalls;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(sampler.progressCalls).toBe(completedAtCancel);
+    const status = await pair.invoke(ACTION_IDS.jobsGet, { jobId });
+    expect((status.output as { status: string }).status).toBe("cancelled");
+    expect(pair.controller.getJobBlob(jobId)).toBeUndefined();
+    await pair.controller.dispose();
+  });
+
+  it("invalidates a storyboard when the media session changes", async () => {
+    const sampler = new FakeSampler({ delayMs: 20 });
+    const pair = createControllerWithSampler(async () => sampler);
+    await open(pair.controller, pair.invoke);
+    const accepted = await pair.invoke(ACTION_IDS.storyboardCreate, { count: 10 });
+    const jobId = accepted.jobId as string;
+    await waitForJobProgress(pair.controller, jobId);
+
+    // A -> B: the old task must stop before publishing a result.
+    await pair.invoke(ACTION_IDS.mediaOpen, {
+      source: { kind: "file", file: sampleFile("b.mp4"), name: "b.mp4" }
+    });
+    await waitForJobStatus(pair.controller, jobId, "cancelled");
+    expect(pair.controller.getJobBlob(jobId)).toBeUndefined();
+    // The sampler is closed once the background task unwinds.
+    for (let attempt = 0; attempt < 100 && !sampler.closed; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(sampler.closed).toBe(true);
+
+    // B -> A -> B: a later open must not revive the cancelled task either.
+    const second = await pair.invoke(ACTION_IDS.storyboardCreate, { count: 10 });
+    const secondId = second.jobId as string;
+    await waitForJobProgress(pair.controller, secondId);
+    await pair.invoke(ACTION_IDS.mediaOpen, {
+      source: { kind: "file", file: sampleFile(), name: "sample.mp4" }
+    });
+    await pair.invoke(ACTION_IDS.mediaOpen, {
+      source: { kind: "file", file: sampleFile("b.mp4"), name: "b.mp4" }
+    });
+    await waitForJobStatus(pair.controller, secondId, "cancelled");
+    expect(pair.controller.getJobBlob(secondId)).toBeUndefined();
+    await pair.controller.dispose();
+  });
+
+  it("rejects a second storyboard while one is running", async () => {
+    const sampler = new FakeSampler({ delayMs: 20 });
+    const pair = createControllerWithSampler(async () => sampler);
+    await open(pair.controller, pair.invoke);
+    const first = await pair.invoke(ACTION_IDS.storyboardCreate, { count: 10 });
+    const second = await pair.invoke(ACTION_IDS.storyboardCreate, { count: 10 });
+    expect(second.status).toBe("rejected");
+    expect(second.error?.code).toBe("BUSY");
+    await pair.invoke(ACTION_IDS.jobsCancel, { jobId: first.jobId as string });
+    await pair.controller.dispose();
+  });
+
+  it("marks a failing sampler as failed without publishing a result", async () => {
+    const pair = createControllerWithSampler(async () => new FakeSampler({ fail: true }));
+    await open(pair.controller, pair.invoke);
+    const accepted = await pair.invoke(ACTION_IDS.storyboardCreate, { count: 4 });
+    const jobId = accepted.jobId as string;
+    await waitForJobStatus(pair.controller, jobId, "failed");
+    expect(pair.controller.getJobBlob(jobId)).toBeUndefined();
+    await pair.controller.dispose();
   });
 
   it("releases capture results and bounds the finished job list", async () => {

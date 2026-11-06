@@ -1290,6 +1290,26 @@
             "minLength": 1,
             "type": "string"
           },
+          "progress": {
+            "additionalProperties": false,
+            "properties": {
+              "completed": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "completed",
+              "total"
+            ],
+            "type": "object"
+          },
           "result": {},
           "status": {
             "enum": [
@@ -1391,6 +1411,26 @@
           "jobId": {
             "minLength": 1,
             "type": "string"
+          },
+          "progress": {
+            "additionalProperties": false,
+            "properties": {
+              "completed": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "completed",
+              "total"
+            ],
+            "type": "object"
           },
           "result": {},
           "status": {
@@ -5342,6 +5382,62 @@
             "minimum": 0,
             "type": "integer"
           },
+          "jobs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "jobId": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "progress": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "completed": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "total": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "completed",
+                    "total"
+                  ],
+                  "type": "object"
+                },
+                "status": {
+                  "enum": [
+                    "accepted",
+                    "running",
+                    "applied",
+                    "failed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "jobId",
+                "action",
+                "status",
+                "updatedAt"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "media": {
             "anyOf": [
               {
@@ -6013,6 +6109,7 @@
           "tracks",
           "selected",
           "playlistIndex",
+          "jobs",
           "positionUs",
           "durationUs",
           "rate",
@@ -6024,6 +6121,70 @@
           "error",
           "stats",
           "updatedAt"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Build a thumbnail strip with an independent sampler; no subtitles or picture filters, timestamps included, playback is never paused or seeked.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "default": 5,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "count": {
+            "default": 15,
+            "maximum": 30,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "quality": {
+            "maximum": 1,
+            "minimum": 0.1,
+            "type": "number"
+          },
+          "tileHeight": {
+            "default": 144,
+            "maximum": 288,
+            "minimum": 36,
+            "type": "integer"
+          },
+          "tileWidth": {
+            "default": 256,
+            "maximum": 512,
+            "minimum": 64,
+            "type": "integer"
+          },
+          "trackIndex": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "storyboard_create",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "const": "accepted",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId",
+          "status"
         ],
         "type": "object"
       }

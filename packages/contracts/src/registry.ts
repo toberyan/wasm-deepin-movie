@@ -18,6 +18,8 @@ import {
   historyListOutputSchema,
   hostRequestInputSchema,
   jobStatusSchema,
+  storyboardCreateInputSchema,
+  storyboardJobOutputSchema,
   jobsInputSchema,
   loopSetInputSchema,
   mediaOpenInputSchema,
@@ -484,6 +486,23 @@ const captureActions = [
     events: ["jobUpdated"],
     ui: { group: "capture", keywords: ["screenshot", "capture", "截图"] },
     mcpTool: "capture_create"
+  }),
+  define({
+    id: ACTION_IDS.storyboardCreate,
+    title: { zh: "生成拼图", en: "Storyboard" },
+    description: {
+      zh: "用独立采样器生成缩略图拼图（不含字幕与画面滤镜，带时间标签），不暂停或跳转正在播放的媒体。",
+      en: "Build a thumbnail strip with an independent sampler; no subtitles or picture filters, timestamps included, playback is never paused or seeked."
+    },
+    inputSchema: storyboardCreateInputSchema,
+    outputSchema: storyboardJobOutputSchema,
+    requires: ["screenshot"],
+    media: "required",
+    cancellable: true,
+    longRunning: true,
+    events: ["jobUpdated"],
+    ui: { group: "capture", keywords: ["storyboard", "thumbnail", "拼图", "预览"] },
+    mcpTool: "storyboard_create"
   })
 ];
 

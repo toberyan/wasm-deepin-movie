@@ -26,29 +26,25 @@ import { BrowserMediaEngine } from "./player/browser-media-engine";
 import { browserHost } from "@wasm-player/host";
 import { CompanionClient, type CompanionBootstrap } from "./player/companion-client";
 import { Icon, type IconName } from "./components/Icon";
-
-function formatTime(us: number): string {
-  if (!Number.isFinite(us) || us < 0) return "0:00";
-  const total = Math.floor(us / 1_000_000);
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-  }
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
+import { PlaybackClock } from "./components/PlaybackClock";
+import { ProgressSlider } from "./components/ProgressSlider";
+import { StatsPanel } from "./components/StatsPanel";
+import { formatTime } from "./format";
+import { usePlayerSnapshot, shallowEqual } from "./player/use-player-snapshot";
+import { createBrowserFrameSampler } from "./player/frame-sampler";
 
 function signed(value: number, suffix = ""): string {
   return `${value > 0 ? "+" : ""}${value}${suffix}`;
 }
 
-function settingNumber(snapshot: PlayerSnapshot | null, id: SettingId, fallback: number): number {
+type SettingsSlice = { settings: PlayerSnapshot["settings"] } | null;
+
+function settingNumber(snapshot: SettingsSlice, id: SettingId, fallback: number): number {
   const value = snapshot?.settings[id]?.effective;
   return typeof value === "number" ? value : fallback;
 }
 
-function settingIssue(snapshot: PlayerSnapshot | null, id: SettingId): string | null {
+function settingIssue(snapshot: SettingsSlice, id: SettingId): string | null {
   const value = snapshot?.settings[id];
   const status = value?.status;
   if (status === "unsupported") return value?.reason ?? "当前媒体不支持";
@@ -70,6 +66,38 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
     )
   );
 }
+
+type AppSnapshot = Omit<PlayerSnapshot, "positionUs" | "durationUs" | "stats" | "updatedAt" | "eventSeq">;
+
+/**
+ * Shell-level slice: everything the layout needs but *not* the playhead or
+ * stats, so playback progress re-renders the leaf components that display it.
+ */
+function selectAppSnapshot(snapshot: PlayerSnapshot): AppSnapshot {
+  return {
+    sessionId: snapshot.sessionId,
+    phase: snapshot.phase,
+    revision: snapshot.revision,
+    media: snapshot.media,
+    tracks: snapshot.tracks,
+    selected: snapshot.selected,
+    playlistIndex: snapshot.playlistIndex,
+    jobs: snapshot.jobs,
+    rate: snapshot.rate,
+    volume: snapshot.volume,
+    muted: snapshot.muted,
+    buffering: snapshot.buffering,
+    settings: snapshot.settings,
+    capabilities: snapshot.capabilities,
+    error: snapshot.error
+  };
+}
+
+const appSnapshotEqual = (left: AppSnapshot, right: AppSnapshot): boolean =>
+  shallowEqual(
+    left as unknown as Record<string, unknown>,
+    right as unknown as Record<string, unknown>
+  );
 
 const THEME_LABELS: Record<string, string> = {
   system: "跟随系统",
@@ -300,9 +328,9 @@ export function App() {
   const [forceWasm, setForceWasm] = useState(
     () => window.localStorage.getItem("wasm-player-force-wasm") === "1"
   );
-  const [snapshot, setSnapshot] = useState<PlayerSnapshot | null>(null);
+  const [controller, setController] = useState<PlayerController | null>(null);
+  const snapshot = usePlayerSnapshot(controller, selectAppSnapshot, appSnapshotEqual);
   const [message, setMessage] = useState<string>("");
-  const [seekUs, setSeekUs] = useState<number | null>(null);
   const [showStats, setShowStats] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsView, setSettingsView] = useState<SettingsView>("playback");
@@ -313,6 +341,10 @@ export function App() {
   const [playlistItems, setPlaylistItems] = useState<PlaylistEntry[]>([]);
   // The controller owns the current playlist entry; the UI only reads it.
   const playlistIndex = snapshot?.playlistIndex ?? null;
+  const storyboardJob = (snapshot?.jobs ?? []).find(
+    (job) => job.action === "storyboard.create" && (job.status === "accepted" || job.status === "running")
+  );
+  const storyboardRunning = storyboardJob !== undefined;
   const [draggingPlaylistIndex, setDraggingPlaylistIndex] = useState<number | null>(null);
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [bookmarkItems, setBookmarkItems] = useState<Bookmark[]>([]);
@@ -364,14 +396,12 @@ export function App() {
       if (!document.hidden) return;
       const controller = controllerRef.current;
       if (!controller || controller.getState().phase !== "playing") return;
-      void controller
-        .invoke({
-          requestId: `hidden-pause-${Date.now()}`,
-          sessionId: controller.sessionId,
-          action: ACTION_IDS.playbackPause,
-          params: {}
-        })
-        .then(() => setSnapshot(controller.getState()));
+      void controller.invoke({
+        requestId: `hidden-pause-${Date.now()}`,
+        sessionId: controller.sessionId,
+        action: ACTION_IDS.playbackPause,
+        params: {}
+      });
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -457,7 +487,6 @@ export function App() {
     let active = true;
     let controller: PlayerController | null = null;
     let companion: CompanionClient | null = null;
-    let unsubscribe: (() => void) | null = null;
     const start = async () => {
       let bootstrap: CompanionBootstrap | null = null;
       try {
@@ -483,7 +512,17 @@ export function App() {
           engine,
           sessionId: bootstrap?.sessionId ?? "web-main",
           host: browserHost,
-          storage: createPlayerStorage()
+          storage: createPlayerStorage(),
+          frameSampler: createBrowserFrameSampler({
+            libavBase: new URL("/libav/", window.location.origin).href,
+            ...(new URLSearchParams(window.location.search).get("libav")
+              ? { libavVariant: new URLSearchParams(window.location.search).get("libav")! }
+              : {}),
+            libavThreads:
+              new URLSearchParams(window.location.search).get("libavThreads") === "mt"
+                ? "mt"
+                : "st"
+          })
         });
         await controller.ready;
         if (!active) {
@@ -491,11 +530,7 @@ export function App() {
           return;
         }
         controllerRef.current = controller;
-        const update = () => {
-          if (active) setSnapshot(controller!.getState());
-        };
-        unsubscribe = controller.subscribe(update);
-        update();
+        if (active) setController(controller);
         (window as Window & { __player?: PlayerController }).__player = controller;
         if (bootstrap) {
           companion = new CompanionClient(bootstrap, controller, setAgentConnected);
@@ -508,7 +543,6 @@ export function App() {
     void start();
     return () => {
       active = false;
-      unsubscribe?.();
       companion?.disconnect();
       controllerRef.current = null;
       void controller?.dispose();
@@ -618,7 +652,8 @@ export function App() {
     } else {
       setMessage("");
     }
-    setSnapshot(controller.getState());
+    // The controller publishes a new snapshot on every state change; the
+    // subscriptions in this component and its leaves pick it up.
     return result;
   };
 
@@ -719,10 +754,11 @@ export function App() {
   };
 
   const seekRelative = async (seconds: number) => {
-    if (!snapshot?.media) return;
+    const live = controllerRef.current?.getSnapshot();
+    if (!live?.media) return;
     const target = Math.min(
-      snapshot.durationUs,
-      Math.max(0, snapshot.positionUs + seconds * 1_000_000)
+      live.durationUs,
+      Math.max(0, live.positionUs + seconds * 1_000_000)
     );
     await invoke(ACTION_IDS.playbackSeek, { positionUs: target });
   };
@@ -737,12 +773,6 @@ export function App() {
   const stepFrame = async (frames: number, direction: "forward" | "backward" = "forward") => {
     if (!snapshot?.media) return;
     await invoke(ACTION_IDS.playbackStep, { frames, direction });
-  };
-
-  const commitSeek = (value: number | null) => {
-    if (value === null) return;
-    void invoke(ACTION_IDS.playbackSeek, { positionUs: value });
-    setSeekUs(null);
   };
 
   const openSubtitle = async (file: File) => {
@@ -816,10 +846,11 @@ export function App() {
   };
 
   const addBookmark = async () => {
-    if (!snapshot?.media) return;
+    const live = controllerRef.current?.getSnapshot();
+    if (!live?.media) return;
     await invoke(ACTION_IDS.bookmarksAdd, {
-      name: formatTime(snapshot.positionUs),
-      positionUs: snapshot.positionUs
+      name: formatTime(live.positionUs),
+      positionUs: live.positionUs
     });
   };
 
@@ -843,7 +874,7 @@ export function App() {
     }
     await invoke(ACTION_IDS.mediaOpen, {
       source,
-      startPositionUs: snapshot?.positionUs ?? 0,
+      startPositionUs: controllerRef.current?.getSnapshot().positionUs ?? 0,
       ...(Object.keys(preferred).length > 0 ? { preferredTracks: preferred } : {}),
       forceDecodePath: { video: "wasm", audio: "wasm" }
     });
@@ -951,66 +982,40 @@ export function App() {
 
   const takeStoryboard = async () => {
     const controller = controllerRef.current;
-    const media = snapshot?.media;
-    if (!controller || !media || snapshot.durationUs <= 0) return;
-    const wasPlaying = snapshot.phase === "playing";
-    const originalPosition = snapshot.positionUs;
-    await invoke(ACTION_IDS.playbackPause);
-    const count = 15;
-    const columns = 5;
-    const tileWidth = 256;
-    const tileHeight = 144;
-    const board = document.createElement("canvas");
-    board.width = columns * tileWidth;
-    board.height = Math.ceil(count / columns) * tileHeight;
-    const context = board.getContext("2d");
-    if (!context) {
-      setMessage("无法创建连拍画布");
-      return;
-    }
-    context.fillStyle = "#000";
-    context.fillRect(0, 0, board.width, board.height);
-    try {
-      for (let index = 0; index < count; index += 1) {
-        const positionUs = Math.min(
-          Math.max(0, snapshot.durationUs - 1),
-          Math.round((snapshot.durationUs * (index + 0.5)) / count)
-        );
-        const beforeRendered = controller.getState().stats.renderedFrames;
-        await invoke(ACTION_IDS.playbackSeek, { positionUs });
-        for (let attempt = 0; attempt < 40; attempt += 1) {
-          if (controller.getState().stats.renderedFrames > beforeRendered) break;
-          await delay(50);
-        }
-        const blob = await captureFrameBlob();
-        if (!blob) continue;
-        const bitmap = await createImageBitmap(blob);
-        const x = (index % columns) * tileWidth;
-        const y = Math.floor(index / columns) * tileHeight;
-        const scale = Math.max(tileWidth / bitmap.width, tileHeight / bitmap.height);
-        const width = bitmap.width * scale;
-        const height = bitmap.height * scale;
-        context.drawImage(
-          bitmap,
-          x + (tileWidth - width) / 2,
-          y + (tileHeight - height) / 2,
-          width,
-          height
-        );
-        bitmap.close();
-        context.fillStyle = "rgba(0, 0, 0, 0.62)";
-        context.fillRect(x, y + tileHeight - 18, tileWidth, 18);
-        context.fillStyle = "#fff";
-        context.font = "11px sans-serif";
-        context.fillText(formatTime(positionUs), x + 6, y + tileHeight - 5);
+    if (!controller || !snapshot?.media) return;
+    // Sampling runs in an independent engine: playback is never paused or
+    // seeked, and switching media cancels the job inside the controller.
+    const accepted = await invoke(ACTION_IDS.storyboardCreate, {
+      count: 15,
+      columns: 5,
+      tileWidth: 256,
+      tileHeight: 144
+    });
+    const jobId = accepted.jobId;
+    if (!jobId) return;
+    const started = Date.now();
+    for (;;) {
+      const job = await invoke(ACTION_IDS.jobsGet, { jobId });
+      const status = (job.output as { status?: string } | undefined)?.status;
+      if (status === "applied") {
+        const blob = controller.getJobBlob(jobId) ?? null;
+        controller.releaseJob(jobId);
+        if (blob) downloadBlob(blob, `storyboard-${Date.now()}.png`);
+        return;
       }
-      const { promise, resolve } = Promise.withResolvers<Blob | null>();
-      board.toBlob(resolve, "image/png");
-      const storyboard = await promise;
-      if (storyboard) downloadBlob(storyboard, `storyboard-${Date.now()}.png`);
-    } finally {
-      await invoke(ACTION_IDS.playbackSeek, { positionUs: originalPosition });
-      if (wasPlaying) await invoke(ACTION_IDS.playbackPlay);
+      if (status === "failed") {
+        setMessage("拼图生成失败");
+        return;
+      }
+      if (status === "cancelled") {
+        setMessage("拼图已取消");
+        return;
+      }
+      if (Date.now() - started > 120_000) {
+        setMessage("拼图超时");
+        return;
+      }
+      await delay(150);
     }
   };
 
@@ -1039,9 +1044,6 @@ export function App() {
     return groups;
   }, [snapshot?.tracks]);
 
-  const positionUs = seekUs ?? snapshot?.positionUs ?? 0;
-  const durationUs = Math.max(0, snapshot?.durationUs ?? 0);
-  const progress = durationUs > 0 ? Math.min(100, Math.max(0, (positionUs / durationUs) * 100)) : 0;
   const themeLabel = THEME_LABELS[String(themeSetting ?? "dark")] ?? "深色";
   const rate = snapshot?.rate ?? 1;
   const volume = snapshot?.volume ?? 1;
@@ -1239,14 +1241,18 @@ export function App() {
               <button
                 className="menu-item"
                 role="menuitem"
-                disabled={!snapshot?.media}
+                disabled={!snapshot?.media || storyboardRunning}
                 onClick={() => {
                   setOpenMenu(null);
                   void takeStoryboard();
                 }}
               >
                 <Icon name="film" />
-                剧情连拍（15 帧）
+                {storyboardJob
+                  ? `拼图生成中 ${storyboardJob.progress?.completed ?? 0}/${
+                      storyboardJob.progress?.total ?? 15
+                    }`
+                  : "剧情连拍（15 帧）"}
               </button>
               <div className="menu-separator" />
               <div
@@ -1906,44 +1912,7 @@ export function App() {
                     </button>
                   </div>
                   {showStats ? (
-                    <div className="stats-panel">
-                      <div>
-                        <span>阶段</span>
-                        <strong>{snapshot.phase}</strong>
-                      </div>
-                      <div>
-                        <span>解码路径</span>
-                        <strong>
-                          {Object.entries(snapshot.media?.decodePaths ?? {})
-                            .map(([key, value]) => `${key}=${value}`)
-                            .join(", ") || "—"}
-                        </strong>
-                      </div>
-                      <div>
-                        <span>视频队列</span>
-                        <strong>
-                          {snapshot.stats.videoQueueFrames} 帧 /{" "}
-                          {(snapshot.stats.videoQueueBytes / 1024 / 1024).toFixed(1)} MiB
-                        </strong>
-                      </div>
-                      <div>
-                        <span>已渲染 / 丢帧</span>
-                        <strong>
-                          {snapshot.stats.renderedFrames} / {snapshot.stats.droppedVideoFrames}
-                        </strong>
-                      </div>
-                      <div>
-                        <span>音频欠载</span>
-                        <strong>{snapshot.stats.audioUnderruns}</strong>
-                      </div>
-                      <div>
-                        <span>WebCodecs / WebGL2</span>
-                        <strong>
-                          {snapshot.capabilities["webcodecs.video"]?.available ? "可用" : "不可用"} /{" "}
-                          {snapshot.capabilities.webgl2?.available ? "可用" : "不可用"}
-                        </strong>
-                      </div>
-                    </div>
+                    <StatsPanel controller={controller} snapshot={snapshot} />
                   ) : (
                     <p className="hint">打开统计后在此显示解码、队列与丢帧信息。</p>
                   )}
@@ -2226,24 +2195,10 @@ export function App() {
 
       {snapshot?.media && (
         <footer className="control-deck" aria-label="播放控制">
-          <div className="timeline-row">
-            <input
-              className="timeline-range"
-              type="range"
-              aria-label="播放进度"
-              min={0}
-              max={Math.max(1, durationUs)}
-              value={positionUs}
-              style={{ "--progress": `${progress}%` } as CSSProperties}
-              onChange={(event) => setSeekUs(Number(event.target.value))}
-              onPointerUp={() => commitSeek(seekUs)}
-              onKeyUp={(event) => {
-                if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
-                  commitSeek(seekUs);
-                }
-              }}
-            />
-          </div>
+          <ProgressSlider
+            controller={controller}
+            onSeek={(positionUs) => void invoke(ACTION_IDS.playbackSeek, { positionUs })}
+          />
           <div className="controls-row">
             <div className="controls-left">
               <button
@@ -2273,11 +2228,7 @@ export function App() {
               >
                 <Icon name="skipForward" />
               </button>
-              <span className="time" aria-label="播放时间">
-                <span className="time-current">{formatTime(positionUs)}</span>
-                <span className="time-sep">/</span>
-                <span>{formatTime(durationUs)}</span>
-              </span>
+              <PlaybackClock controller={controller} />
             </div>
 
             <div className="controls-right">

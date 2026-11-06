@@ -135,6 +135,21 @@ export const effectiveValueSchema = z
   })
   .strict();
 
+export const jobSummarySchema = z
+  .object({
+    jobId: z.string().min(1),
+    action: z.string().min(1),
+    status: z.enum(["accepted", "running", "applied", "failed", "cancelled"]),
+    progress: z
+      .object({
+        completed: z.number().int().nonnegative(),
+        total: z.number().int().nonnegative()
+      })
+      .optional(),
+    updatedAt: z.number()
+  })
+  .strict();
+
 export const playerSnapshotSchema = z
   .object({
     sessionId: z.string().min(1),
@@ -145,6 +160,7 @@ export const playerSnapshotSchema = z
     tracks: z.array(trackInfoSchema),
     selected: selectedTracksSchema,
     playlistIndex: z.number().int().nonnegative().nullable(),
+    jobs: z.array(jobSummarySchema),
     positionUs: z.number(),
     durationUs: z.number().nonnegative(),
     rate: z.number().positive(),

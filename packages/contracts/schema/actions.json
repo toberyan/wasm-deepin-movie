@@ -1592,6 +1592,26 @@
             "minLength": 1,
             "type": "string"
           },
+          "progress": {
+            "additionalProperties": false,
+            "properties": {
+              "completed": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "completed",
+              "total"
+            ],
+            "type": "object"
+          },
           "result": {},
           "status": {
             "enum": [
@@ -1717,6 +1737,26 @@
           "jobId": {
             "minLength": 1,
             "type": "string"
+          },
+          "progress": {
+            "additionalProperties": false,
+            "properties": {
+              "completed": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "completed",
+              "total"
+            ],
+            "type": "object"
           },
           "result": {},
           "status": {
@@ -6402,6 +6442,62 @@
             "minimum": 0,
             "type": "integer"
           },
+          "jobs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "jobId": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "progress": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "completed": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "total": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "completed",
+                    "total"
+                  ],
+                  "type": "object"
+                },
+                "status": {
+                  "enum": [
+                    "accepted",
+                    "running",
+                    "applied",
+                    "failed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "jobId",
+                "action",
+                "status",
+                "updatedAt"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "media": {
             "anyOf": [
               {
@@ -7073,6 +7169,7 @@
           "tracks",
           "selected",
           "playlistIndex",
+          "jobs",
           "positionUs",
           "durationUs",
           "rate",
@@ -7099,6 +7196,98 @@
           "state",
           "status",
           "状态"
+        ]
+      }
+    },
+    {
+      "cancellable": true,
+      "description": {
+        "en": "Build a thumbnail strip with an independent sampler; no subtitles or picture filters, timestamps included, playback is never paused or seeked.",
+        "zh": "用独立采样器生成缩略图拼图（不含字幕与画面滤镜，带时间标签），不暂停或跳转正在播放的媒体。"
+      },
+      "events": [
+        "jobUpdated"
+      ],
+      "id": "storyboard.create",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "default": 5,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "count": {
+            "default": 15,
+            "maximum": 30,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "quality": {
+            "maximum": 1,
+            "minimum": 0.1,
+            "type": "number"
+          },
+          "tileHeight": {
+            "default": 144,
+            "maximum": 288,
+            "minimum": 36,
+            "type": "integer"
+          },
+          "tileWidth": {
+            "default": 256,
+            "maximum": 512,
+            "minimum": 64,
+            "type": "integer"
+          },
+          "trackIndex": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "longRunning": true,
+      "mcp": {
+        "tool": "storyboard_create"
+      },
+      "media": "required",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "const": "accepted",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "requires": [
+        "screenshot"
+      ],
+      "title": {
+        "en": "Storyboard",
+        "zh": "生成拼图"
+      },
+      "ui": {
+        "group": "capture",
+        "keywords": [
+          "storyboard",
+          "thumbnail",
+          "拼图",
+          "预览"
         ]
       }
     },

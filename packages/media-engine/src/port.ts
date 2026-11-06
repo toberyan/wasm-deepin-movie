@@ -125,6 +125,41 @@ export interface SubtitleLoadInput {
 
 export type StepDirection = "forward" | "backward";
 
+export interface FrameSamplerInfo {
+  durationUs: number;
+  width: number;
+  height: number;
+  /** Video track the sampler decodes. */
+  trackIndex: number;
+}
+
+export interface StoryboardSampleRequest {
+  positionsUs: number[];
+  columns: number;
+  tileWidth: number;
+  tileHeight: number;
+  quality?: number;
+  signal: AbortSignal;
+  onProgress?: (completed: number, total: number) => void;
+}
+
+export interface FrameSampler {
+  /** Opened and probed by the factory; describes the media it samples. */
+  readonly info: FrameSamplerInfo;
+  /** Composes the sampled frames into one image, honouring `signal`. */
+  storyboard(request: StoryboardSampleRequest): Promise<{ blob: Blob; width: number; height: number }>;
+  close(): Promise<void>;
+}
+
+/**
+ * Opens an independent sampler for a source. It must not share state with the
+ * playing engine, so sampling never seeks or pauses the main player.
+ */
+export type FrameSamplerFactory = (
+  source: EngineMediaSource,
+  options: { trackIndex?: number }
+) => Promise<FrameSampler>;
+
 /**
  * The only boundary player-core sees for media work. Implementations must not
  * leak FFmpeg pointers, WebCodecs objects or renderer details through it.

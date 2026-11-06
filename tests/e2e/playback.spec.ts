@@ -40,12 +40,19 @@ interface PlayerWindow {
   __player?: {
     sessionId: string;
     getState(): PlayerState;
+    getJobBlob(jobId: string): Blob | undefined;
+    releaseJob(jobId: string): boolean;
     invoke(request: {
       requestId: string;
       sessionId: string;
       action: string;
       params: Record<string, unknown>;
-    }): Promise<{ status: string; output?: unknown; error?: { code: string; message: string } }>;
+    }): Promise<{
+      status: string;
+      jobId?: string;
+      output?: unknown;
+      error?: { code: string; message: string };
+    }>;
   };
 }
 
@@ -118,6 +125,12 @@ async function playAndPause(page: Page): Promise<void> {
   });
   const playing = await state(page);
   expect(playing.stats.decodedAudioFrames).toBeGreaterThan(0);
+  // The clock is a leaf component subscribed to the snapshot store; it must
+  // follow playback without the app shell re-reading the whole state.
+  const clockBefore = await page.locator(".time-current").innerText();
+  await expect
+    .poll(async () => page.locator(".time-current").innerText())
+    .not.toBe(clockBefore);
   // The buffer figure comes from the AudioWorklet ring. An estimate that
   // subtracts the same interval on every animation frame collapses to zero
   // within one stats tick, so this would fail with the old accounting.
@@ -771,6 +784,12 @@ test("opens MP4, renders the first frame, plays audio and pauses", async ({ page
   });
   const playing = await state(page);
   expect(playing.stats.decodedAudioFrames).toBeGreaterThan(0);
+  // The clock is a leaf component subscribed to the snapshot store; it must
+  // follow playback without the app shell re-reading the whole state.
+  const clockBefore = await page.locator(".time-current").innerText();
+  await expect
+    .poll(async () => page.locator(".time-current").innerText())
+    .not.toBe(clockBefore);
   // The buffer figure comes from the AudioWorklet ring. An estimate that
   // subtracts the same interval on every animation frame collapses to zero
   // within one stats tick, so this would fail with the old accounting.
@@ -899,6 +918,166 @@ test("seeks, applies picture settings, loads subtitles and captures a screenshot
   await page.getByRole("menuitem", { name: "剧情连拍（15 帧）", exact: true }).click();
   const board = await boardPromise;
   expect(board.suggestedFilename()).toMatch(/storyboard-.*\.png$/);
+});
+
+test("builds a storyboard without interrupting playback", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  await invoke(page, "playback.play");
+  await page.waitForFunction(
+    () => (window as unknown as PlayerWindow).__player?.getState().phase === "playing"
+  );
+  const before = (await state(page)).positionUs;
+
+  const accepted = await invoke(page, "storyboard.create", {
+    count: 6,
+    columns: 3,
+    tileWidth: 160,
+    tileHeight: 90
+  });
+  expect(accepted.status).toBe("accepted");
+  const jobId = accepted.jobId as string;
+
+  // Sampling runs in its own engine: the playhead keeps moving and the phase
+  // stays "playing" instead of pausing for the capture.
+  await page.waitForTimeout(600);
+  const during = await state(page);
+  expect(during.phase).toBe("playing");
+  expect(during.positionUs).toBeGreaterThan(before);
+
+  await expect
+    .poll(async () => {
+      const job = await invoke(page, "jobs.get", { jobId });
+      return (job.output as { status?: string } | undefined)?.status;
+    })
+    .toBe("applied");
+  const blob = await page.evaluate(
+    (id) => (window as unknown as PlayerWindow).__player?.getJobBlob(id)?.size ?? 0,
+    jobId
+  );
+  expect(blob).toBeGreaterThan(1_000);
+  await page.evaluate(
+    (id) => (window as unknown as PlayerWindow).__player?.releaseJob(id),
+    jobId
+  );
+  expect(
+    await page.evaluate(
+      (id) => (window as unknown as PlayerWindow).__player?.getJobBlob(id) ?? null,
+      jobId
+    )
+  ).toBeNull();
+});
+
+test("cancels a storyboard when the media session changes", async ({ page }) => {
+  const base64 = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4")).toString(
+    "base64"
+  );
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const result = await page.evaluate(async (encoded) => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+    const makeFile = (name: string, lastModified: number) =>
+      new File([bytes], name, { type: "video/mp4", lastModified });
+    const call = (action: string, params: Record<string, unknown> = {}) =>
+      player.invoke({
+        requestId: `e2e-${action}-${Math.random()}`,
+        sessionId: player.sessionId,
+        action,
+        params
+      });
+    await call("media.open", {
+      source: { kind: "file", file: makeFile("a.mp4", 1_700_000_000_000), name: "a.mp4" },
+      autoPlay: true
+    });
+    const accepted = await call("storyboard.create", { count: 15, columns: 5 });
+    const jobId = accepted.jobId as string;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const job = await call("jobs.get", { jobId });
+      const progress = (job.output as { progress?: { completed: number } } | undefined)?.progress;
+      if ((progress?.completed ?? 0) > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    // A -> B -> A: the old task must stay cancelled and never publish a result.
+    await call("media.open", {
+      source: { kind: "file", file: makeFile("b.mp4", 1_700_000_000_001), name: "b.mp4" },
+      autoPlay: false
+    });
+    const afterB = (await call("jobs.get", { jobId })).output as { status?: string } | undefined;
+    await call("media.open", {
+      source: { kind: "file", file: makeFile("a.mp4", 1_700_000_000_000), name: "a.mp4" },
+      autoPlay: false
+    });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const afterA = (await call("jobs.get", { jobId })).output as { status?: string } | undefined;
+    return {
+      afterB: afterB?.status,
+      afterA: afterA?.status,
+      blob: player.getJobBlob(jobId) ?? null,
+      media: player.getState().media?.name
+    };
+  }, base64);
+  expect(result.afterB).toBe("cancelled");
+  expect(result.afterA).toBe("cancelled");
+  expect(result.blob).toBeNull();
+  expect(result.media).toBe("a.mp4");
+});
+
+test("controls storyboard concurrency and cancellation", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+
+  const first = await invoke(page, "storyboard.create", { count: 15, columns: 5 });
+  expect(first.status).toBe("accepted");
+  const jobId = first.jobId as string;
+  const second = await invoke(page, "storyboard.create", { count: 5 });
+  expect(second.status).toBe("rejected");
+  expect(second.error?.code).toBe("BUSY");
+
+  await expect
+    .poll(async () => {
+      const job = await invoke(page, "jobs.get", { jobId });
+      return (job.output as { progress?: { completed: number } } | undefined)?.progress
+        ?.completed;
+    })
+    .toBeGreaterThan(0);
+  const cancelled = await invoke(page, "jobs.cancel", { jobId });
+  expect(cancelled.status).toBe("applied");
+  const completedAtCancel = (
+    (await invoke(page, "jobs.get", { jobId })).output as { progress?: { completed: number } }
+  ).progress?.completed;
+  await expect
+    .poll(async () => {
+      const job = await invoke(page, "jobs.get", { jobId });
+      return (job.output as { status?: string } | undefined)?.status;
+    })
+    .toBe("cancelled");
+  await page.waitForTimeout(600);
+  const completedLater = (
+    (await invoke(page, "jobs.get", { jobId })).output as { progress?: { completed: number } }
+  ).progress?.completed;
+  expect(completedLater).toBe(completedAtCancel);
+  expect(
+    await page.evaluate(
+      (id) => (window as unknown as PlayerWindow).__player?.getJobBlob(id) ?? null,
+      jobId
+    )
+  ).toBeNull();
 });
 
 test("renders embedded SubRip subtitles from Matroska", async ({ page }) => {
@@ -1705,6 +1884,12 @@ test("plays AVI through the custom WASM video/audio path", async ({ page }) => {
   });
   const playing = await state(page);
   expect(playing.stats.decodedAudioFrames).toBeGreaterThan(0);
+  // The clock is a leaf component subscribed to the snapshot store; it must
+  // follow playback without the app shell re-reading the whole state.
+  const clockBefore = await page.locator(".time-current").innerText();
+  await expect
+    .poll(async () => page.locator(".time-current").innerText())
+    .not.toBe(clockBefore);
   // The buffer figure comes from the AudioWorklet ring. An estimate that
   // subtracts the same interval on every animation frame collapses to zero
   // within one stats tick, so this would fail with the old accounting.

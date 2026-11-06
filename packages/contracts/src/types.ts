@@ -163,6 +163,14 @@ export interface CapabilityState {
 
 export type CapabilityReport = Record<CapabilityName, CapabilityState>;
 
+export interface JobSummary {
+  jobId: string;
+  action: string;
+  status: "accepted" | "running" | "applied" | "failed" | "cancelled";
+  progress?: { completed: number; total: number };
+  updatedAt: number;
+}
+
 export interface PlayerSnapshot {
   sessionId: string;
   phase: PlayerPhase;
@@ -177,6 +185,8 @@ export interface PlayerSnapshot {
    * SDK all agree on "which entry is current".
    */
   playlistIndex: number | null;
+  /** Capture/storyboard jobs, published so the UI can show progress. */
+  jobs: JobSummary[];
   positionUs: number;
   durationUs: number;
   rate: number;
