@@ -5,7 +5,8 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ReactNode
+  type ReactNode,
+  type KeyboardEvent as ReactKeyboardEvent
 } from "react";
 import {
   ACTION_IDS,
@@ -28,6 +29,9 @@ import { CompanionClient, type CompanionBootstrap } from "./player/companion-cli
 import { Icon, type IconName } from "./components/Icon";
 import { PlaybackClock } from "./components/PlaybackClock";
 import { ProgressSlider } from "./components/ProgressSlider";
+import { Modal } from "./components/Modal";
+import { PlayerMenu, type MenuEntry } from "./components/PlayerMenu";
+import playerLogo from "./assets/player-logo.svg";
 import { StatsPanel } from "./components/StatsPanel";
 import { formatTime } from "./format";
 import { usePlayerSnapshot, shallowEqual } from "./player/use-player-snapshot";
@@ -61,11 +65,26 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
     target instanceof Element &&
     Boolean(
       target.closest(
-        'input, textarea, select, button, a[href], summary, [contenteditable="true"], [role="slider"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="switch"]'
+        'dialog[open], input, textarea, select, button, a[href], summary, [contenteditable="true"], [role="slider"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="switch"]'
       )
     )
   );
 }
+
+function navigateTabs(event: ReactKeyboardEvent<HTMLElement>, select: (index: number) => void) {
+  const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
+  if (!keys.includes(event.key)) return;
+  const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+  const current = tabs.indexOf(document.activeElement as HTMLButtonElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 :
+    (current + (event.key === "ArrowDown" ? 1 : -1) + tabs.length) % tabs.length;
+  if (!tabs[next]) return;
+  event.preventDefault();
+  select(next);
+  tabs[next]?.focus();
+}
+
+const LIBRARY_TABS = [["playlist", "播放列表"], ["history", "历史"], ["bookmarks", "书签"]] as const;
 
 type AppSnapshot = Omit<PlayerSnapshot, "positionUs" | "durationUs" | "stats" | "updatedAt" | "eventSeq">;
 
@@ -105,9 +124,8 @@ const THEME_LABELS: Record<string, string> = {
   light: "浅色"
 };
 
-type SettingsView = "playback" | "app";
-type SettingsTab = "picture" | "audio" | "subtitle" | "playback";
-type MenuId = "open" | "more" | "volume" | "rate" | "audio" | "subtitle" | null;
+type SettingsTab = "picture" | "audio" | "subtitle" | "playback" | "appearance" | "shortcuts" | "advanced";
+type MenuId = "more" | "volume" | "rate" | "context" | null;
 
 interface PlaylistEntry {
   index: number;
@@ -143,10 +161,13 @@ function delay(ms: number): Promise<void> {
 }
 
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
+  { id: "playback", label: "播放", icon: "speed" },
   { id: "picture", label: "画面", icon: "film" },
   { id: "audio", label: "声音", icon: "audio" },
   { id: "subtitle", label: "字幕", icon: "subtitles" },
-  { id: "playback", label: "播放", icon: "speed" }
+  { id: "appearance", label: "外观", icon: "sun" },
+  { id: "shortcuts", label: "快捷键", icon: "monitor" },
+  { id: "advanced", label: "高级", icon: "more" }
 ];
 
 const PICTURE_IDS: SettingId[] = [
@@ -333,8 +354,7 @@ export function App() {
   const [message, setMessage] = useState<string>("");
   const [showStats, setShowStats] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsView, setSettingsView] = useState<SettingsView>("playback");
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("picture");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("playback");
   const [showPlaylist, setShowPlaylist] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   const [libraryTab, setLibraryTab] = useState<"playlist" | "history" | "bookmarks">("playlist");
@@ -350,7 +370,11 @@ export function App() {
   const [bookmarkItems, setBookmarkItems] = useState<Bookmark[]>([]);
   const [urlDraft, setUrlDraft] = useState("");
   const [openUrlDraft, setOpenUrlDraft] = useState("");
-  const [emptyUrlOpen, setEmptyUrlOpen] = useState(false);
+  const [showUrl, setShowUrl] = useState(false);
+  const [contextPoint, setContextPoint] = useState({ x: 0, y: 0 });
+  const mainMenuRef = useRef<HTMLButtonElement>(null);
+  const rateMenuRef = useRef<HTMLButtonElement>(null);
+  const contextRef = useRef<HTMLDivElement>(null);
   const [subtitleEncoding, setSubtitleEncoding] = useState(
     () => window.localStorage.getItem("wasm-player-subtitle-encoding") ?? "auto"
   );
@@ -368,7 +392,7 @@ export function App() {
   const currentMediaKey = snapshot?.media?.sourceId ?? null;
 
   useEffect(() => {
-    const theme = String(themeSetting ?? "dark");
+    const theme = String(themeSetting ?? "system");
     const query = window.matchMedia("(prefers-color-scheme: light)");
     const apply = () => {
       document.documentElement.dataset.theme =
@@ -408,7 +432,7 @@ export function App() {
   }, [pauseOnHidden]);
 
   useEffect(() => {
-    if (!openMenu) return;
+    if (openMenu !== "volume") return;
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Element) || !event.target.closest("[data-menu-root]")) {
         setOpenMenu(null);
@@ -551,8 +575,14 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isInteractiveTarget(event.target)) return;
+      if (document.querySelector("dialog[open]")) return;
       const commandKey = event.ctrlKey || event.metaKey;
+      if (commandKey && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        fileInputRef.current?.click();
+        return;
+      }
+      if (isInteractiveTarget(event.target)) return;
       if (commandKey && event.key === "ArrowLeft") {
         event.preventDefault();
         void setRateBy(-0.1);
@@ -604,9 +634,9 @@ export function App() {
       hideTimerRef.current = null;
     }
     const idle = isFullscreen && hasMedia && isPlaying;
-    if (!idle || openMenu || showSettings || showPlaylist) return;
+    if (!idle || openMenu || showSettings || showPlaylist || showInfo || showUrl) return;
     hideTimerRef.current = window.setTimeout(() => setChromeVisible(false), 3000);
-  }, [isFullscreen, hasMedia, isPlaying, openMenu, showSettings, showPlaylist]);
+  }, [isFullscreen, hasMedia, isPlaying, openMenu, showSettings, showPlaylist, showInfo, showUrl]);
 
   useEffect(() => {
     wakeChrome();
@@ -712,8 +742,8 @@ export function App() {
       const first = sources[0];
       const entry = first
         ? items.find((item) =>
-            first.identity ? item.identity === first.identity : item.name === first.name
-          )
+          first.identity ? item.identity === first.identity : item.name === first.name
+        )
         : undefined;
       if (entry) {
         setLibraryTab("playlist");
@@ -733,7 +763,7 @@ export function App() {
       const source: MediaSourceInput = { kind: "url", url: parsed.href, name };
       lastSourceRef.current = source;
       setOpenUrlDraft("");
-      setEmptyUrlOpen(false);
+      setShowUrl(false);
       setOpenMenu(null);
       await invoke(ACTION_IDS.mediaOpen, {
         source,
@@ -745,7 +775,10 @@ export function App() {
   };
 
   const togglePlay = async () => {
-    if (!snapshot?.media) return;
+    if (!snapshot?.media) {
+      fileInputRef.current?.click();
+      return;
+    }
     if (snapshot.phase === "playing" || snapshot.phase === "buffering") {
       await invoke(ACTION_IDS.playbackPause);
     } else {
@@ -1019,10 +1052,9 @@ export function App() {
     }
   };
 
-  const openSettings = (view: SettingsView = "playback", tab?: SettingsTab) => {
+  const openSettings = (tab: SettingsTab = "playback") => {
     setShowSettings(true);
-    setSettingsView(view);
-    if (tab) setSettingsTab(tab);
+    setSettingsTab(tab);
     setShowPlaylist(false);
     setOpenMenu(null);
   };
@@ -1044,7 +1076,6 @@ export function App() {
     return groups;
   }, [snapshot?.tracks]);
 
-  const themeLabel = THEME_LABELS[String(themeSetting ?? "dark")] ?? "深色";
   const rate = snapshot?.rate ?? 1;
   const volume = snapshot?.volume ?? 1;
   const muted = snapshot?.muted ?? false;
@@ -1061,215 +1092,114 @@ export function App() {
     />
   );
 
-  const menuTrackItem = (track: TrackInfo, type: "audio" | "subtitle") => (
-    <button
-      key={`${type}-${track.index}`}
-      className={`menu-item ${track.selected ? "selected" : ""}`}
-      onClick={() => void selectTrack(type, track.index)}
-    >
-      <span className="menu-check">{track.selected && <Icon name="check" size={14} />}</span>
-      <span className="menu-item-label">
-        {track.title ?? `${track.language ?? "轨道"} ${track.index}`}
-      </span>
-      <span className="menu-meta">{track.codec}</span>
-    </button>
-  );
+  const rateItems: MenuEntry[] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4].map((value) => ({
+    label: `${value}×${value === 1 ? " · 正常" : ""}`,
+    selected: rate === value,
+    disabled: !hasMedia,
+    onSelect: () => { void invoke(ACTION_IDS.playbackSetRate, { rate: value }); }
+  }));
+  const trackItems = (type: "audio" | "subtitle"): MenuEntry[] => {
+    const items: MenuEntry[] = (tracksByType[type] ?? []).map((track) => ({
+      label: track.title ?? `${track.language ?? "轨道"} ${track.index}`,
+      selected: track.selected,
+      meta: track.codec,
+      onSelect: () => { void selectTrack(type, track.index); }
+    }));
+    if (items.length === 0) items.push({ label: type === "audio" ? "无音轨" : "无字幕轨", disabled: true });
+    if (type === "subtitle") items.push(
+      {
+        label: "加载外挂字幕…", icon: "folder", separator: true, disabled: !hasMedia,
+        onSelect: () => subtitleInputRef.current?.click()
+      },
+      {
+        label: subtitleVisible ? "隐藏字幕" : "显示字幕", disabled: !hasMedia,
+        onSelect: () => { void applyPatch({ subtitle: { visible: !subtitleVisible } }); }
+      }
+    );
+    items.push({
+      label: type === "audio" ? "声音设置…" : "字幕设置…", icon: "settings", separator: true,
+      onSelect: () => openSettings(type)
+    });
+    return items;
+  };
+  const playbackItems: MenuEntry[] = [
+    { label: isPlaying ? "暂停" : "播放", icon: isPlaying ? "pause" : "play", meta: "Space", onSelect: () => { void togglePlay(); } },
+    { label: "播放速度", icon: "speed", children: rateItems },
+    { label: "上一帧", icon: "stepBack", meta: ",", disabled: !hasMedia, onSelect: () => { void stepFrame(1, "backward"); } },
+    { label: "下一帧", icon: "stepForward", meta: ".", disabled: !hasMedia, onSelect: () => { void stepFrame(1); } },
+    { label: "画面", icon: "film", separator: true, onSelect: () => openSettings("picture") },
+    { label: "声音", icon: "audio", children: trackItems("audio") },
+    { label: "字幕", icon: "subtitles", children: trackItems("subtitle") }
+  ];
+  const fileItems: MenuEntry[] = [
+    { label: "打开文件…", icon: "folder", meta: "Ctrl+O", onSelect: () => fileInputRef.current?.click() },
+    { label: "打开文件夹…", icon: "library", onSelect: () => folderInputRef.current?.click() },
+    { label: "打开链接…", icon: "link", onSelect: () => setShowUrl(true) }
+  ];
+  const mainItems: MenuEntry[] = [
+    ...fileItems,
+    { label: "播放调节", icon: "play", separator: true, children: playbackItems },
+    { label: "截图", icon: "camera", disabled: !hasMedia, onSelect: () => { void takeScreenshot(); } },
+    { label: storyboardRunning ? `拼图生成中 ${storyboardJob.progress?.completed ?? 0}/15` : "剧情连拍（15 帧）", icon: "film", disabled: !hasMedia || storyboardRunning, onSelect: () => { void takeStoryboard(); } },
+    { label: "影片信息", icon: "info", disabled: !hasMedia, onSelect: () => setShowInfo(true) },
+    {
+      label: "主题", icon: "sun", separator: true, children: ["system", "light", "dark"].map((theme) => ({
+        label: THEME_LABELS[theme] ?? theme, selected: String(themeSetting ?? "system") === theme,
+        onSelect: () => { void applyGlobalPatch({ app: { theme } }); }
+      }))
+    },
+    { label: "设置", icon: "settings", onSelect: () => openSettings() },
+    { label: "快捷键", icon: "monitor", onSelect: () => openSettings("shortcuts") }
+  ];
+  const contextItems: MenuEntry[] = [
+    ...playbackItems,
+    { label: "打开", icon: "folder", separator: true, children: fileItems },
+    ...mainItems.slice(4)
+  ];
 
   return (
     <div
-      className={`app-shell ${isFullscreen && !chromeVisible ? "chrome-hidden" : ""} ${
-        isFullscreen ? "is-fullscreen" : ""
-      }`}
+      className={`app-shell ${isFullscreen && !chromeVisible ? "chrome-hidden" : ""} ${isFullscreen ? "is-fullscreen" : ""
+        }`}
     >
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">
-            <Icon name="film" size={16} />
-          </span>
-          <span className="brand-name">WASM Player</span>
-        </div>
+        <img className="brand-logo" src={playerLogo} alt="WASM Player" draggable={false} />
         <div className="title" title={snapshot?.media?.name}>
-          {snapshot?.media?.name ?? "未打开媒体"}
+          {snapshot?.media?.name ?? ""}
         </div>
-        <div className="top-actions">
-          <div className="menu-anchor" data-menu-root>
-            <button
-              className={`top-button ${openMenu === "open" ? "active" : ""}`}
-              aria-haspopup="menu"
-              aria-expanded={openMenu === "open"}
-              onClick={() => setOpenMenu((value) => (value === "open" ? null : "open"))}
-            >
-              <Icon name="folder" />
-              <span className="button-label">打开</span>
-              <Icon name="chevronDown" size={14} />
-            </button>
-            {openMenu === "open" && (
-              <div className="menu-panel open-menu" role="menu">
-                <button
-                  className="menu-item"
-                  role="menuitem"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    fileInputRef.current?.click();
-                  }}
-                >
-                  <Icon name="folder" />
-                  本地文件…
-                </button>
-                <button
-                  className="menu-item"
-                  role="menuitem"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    folderInputRef.current?.click();
-                  }}
-                >
-                  <Icon name="library" />
-                  打开文件夹…
-                </button>
-                <div className="menu-separator" />
-                <div className="menu-label">打开网络链接</div>
-                <form
-                  className="menu-url"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void openUrl();
-                  }}
-                >
-                  <Icon name="link" size={16} />
-                  <input
-                    value={openUrlDraft}
-                    placeholder="https://example.com/video.mp4"
-                    autoFocus
-                    onChange={(event) => setOpenUrlDraft(event.target.value)}
-                  />
-                  <button className="menu-action" type="submit">
-                    打开
-                  </button>
-                </form>
-              </div>
-            )}
-          </div>
-          <button
-            className={`top-button ${showPlaylist ? "active" : ""}`}
-            aria-label="媒体库"
-            aria-pressed={showPlaylist}
-            onClick={togglePlaylist}
-          >
-            <Icon name="library" />
-            <span className="button-label">媒体库</span>
-          </button>
-          <div className="menu-anchor" data-menu-root>
-            <button
-              className={`icon-button ${openMenu === "more" ? "active" : ""}`}
-              aria-label="更多"
-              aria-haspopup="menu"
-              aria-expanded={openMenu === "more"}
-              onClick={() => setOpenMenu((value) => (value === "more" ? null : "more"))}
-            >
-              <Icon name="more" />
-            </button>
-            <div className="menu-panel more-menu" role="menu" hidden={openMenu !== "more"}>
-              <div className="menu-label">应用</div>
-              <button className="menu-item" role="menuitem" onClick={() => openSettings("app")}>
-                <Icon name="sun" />
-                应用外观与设置
-                <span className="menu-meta">{themeLabel}</span>
-              </button>
-              <button
-                className="menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setShowStats((value) => !value);
-                  openSettings("app");
-                }}
-              >
-                <Icon name="stats" />
-                播放统计
-                <span className="menu-meta">{showStats ? "显示" : "隐藏"}</span>
-              </button>
-              <button
-                className="menu-item"
-                role="menuitem"
-                disabled={!snapshot?.media}
-                onClick={() => {
-                  setOpenMenu(null);
-                  setShowInfo(true);
-                }}
-              >
-                <Icon name="info" />
-                影片信息
-              </button>
-              <button
-                className="menu-item"
-                role="menuitem"
-                disabled={!snapshot?.media}
-                onClick={() => {
-                  setOpenMenu(null);
-                  void stepFrame(1, "backward");
-                }}
-              >
-                <Icon name="stepBack" />
-                上一帧
-                <span className="menu-meta">,</span>
-              </button>
-              <button
-                className="menu-item"
-                role="menuitem"
-                disabled={!snapshot?.media}
-                onClick={() => {
-                  setOpenMenu(null);
-                  void stepFrame(1, "forward");
-                }}
-              >
-                <Icon name="stepForward" />
-                下一帧
-                <span className="menu-meta">.</span>
-              </button>
-              <button
-                className="menu-item"
-                role="menuitem"
-                disabled={!snapshot?.media}
-                onClick={() => {
-                  setOpenMenu(null);
-                  void takeScreenshot();
-                }}
-              >
-                <Icon name="camera" />
-                截图
-              </button>
-              <button
-                className="menu-item"
-                role="menuitem"
-                disabled={!snapshot?.media || storyboardRunning}
-                onClick={() => {
-                  setOpenMenu(null);
-                  void takeStoryboard();
-                }}
-              >
-                <Icon name="film" />
-                {storyboardJob
-                  ? `拼图生成中 ${storyboardJob.progress?.completed ?? 0}/${
-                      storyboardJob.progress?.total ?? 15
-                    }`
-                  : "剧情连拍（15 帧）"}
-              </button>
-              <div className="menu-separator" />
-              <div
-                className={`agent-status ${agentConnected ? "connected" : ""}`}
-                title={agentConnected ? "Companion 已连接" : "Companion 尚未连接"}
-              >
-                <span className="dot" />
-                {agentConnected ? "Agent 已连接" : "Agent 离线"}
-              </div>
-            </div>
-          </div>
-        </div>
+        <button
+          ref={mainMenuRef}
+          data-main-menu
+          className={`icon-button top-menu-button ${openMenu === "more" ? "active" : ""}`}
+          aria-label="更多"
+          title="主菜单"
+          aria-haspopup="menu"
+          aria-expanded={openMenu === "more"}
+          onClick={() => setOpenMenu((value) => value === "more" ? null : "more")}
+        ><Icon name="menu" size={20} /></button>
       </header>
+      {(openMenu === "more" || openMenu === "rate" || openMenu === "context") && (
+        <PlayerMenu
+          key={openMenu}
+          className={openMenu === "more" ? "more-menu" : ""}
+          items={openMenu === "rate" ? rateItems : openMenu === "context" ? contextItems : mainItems}
+          anchor={openMenu === "rate" ? rateMenuRef : openMenu === "context" ? contextRef : mainMenuRef}
+          point={openMenu === "context" ? contextPoint : undefined}
+          onClose={() => setOpenMenu(null)}
+        />
+      )}
 
       <main className={`stage ${snapshot?.media ? "has-media" : "is-empty"}`}>
         <div
+          ref={contextRef}
+          tabIndex={-1}
           className={`video-frame ${dragActive ? "drag-active" : ""}`}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setContextPoint({ x: event.clientX, y: event.clientY });
+            setOpenMenu("context");
+          }}
+          onDoubleClick={() => { if (hasMedia) void invoke(ACTION_IDS.uiSet, { fullscreen: !document.fullscreenElement }); }}
           onDragEnter={(event) => {
             event.preventDefault();
             setDragActive(true);
@@ -1304,57 +1234,10 @@ export function App() {
           <div ref={overlayRef} className="overlay-host" />
           {!snapshot?.media && (
             <div className="empty-state">
-              <div className="empty-glyph">
-                <Icon name="film" size={30} />
-              </div>
-              <h1 className="empty-title">把视频放到这里</h1>
-              <p className="empty-subtitle">
-                拖放本地文件，或打开网络链接。支持 MP4、MKV、WebM、AVI 等常见格式。
-              </p>
-              <div className="empty-actions">
-                <button
-                  className="primary-button"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <Icon name="folder" />
-                  选择文件
-                </button>
-                <button
-                  className="secondary-button"
-                  onClick={() => folderInputRef.current?.click()}
-                >
-                  <Icon name="library" />
-                  打开文件夹
-                </button>
-                <button
-                  className="secondary-button"
-                  aria-expanded={emptyUrlOpen}
-                  onClick={() => setEmptyUrlOpen((value) => !value)}
-                >
-                  <Icon name="link" />
-                  打开链接
-                </button>
-              </div>
-              {emptyUrlOpen && (
-                <form
-                  className="empty-url"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void openUrl();
-                  }}
-                >
-                  <input
-                    value={openUrlDraft}
-                    placeholder="https://example.com/video.mp4"
-                    autoFocus
-                    onChange={(event) => setOpenUrlDraft(event.target.value)}
-                  />
-                  <button className="secondary-button" type="submit">
-                    打开
-                  </button>
-                </form>
-              )}
-              <div className="empty-hint">打开视频后，可拖入字幕文件（SRT / ASS / VTT）</div>
+              <button className="empty-open" aria-label="打开文件" title="打开文件 · Ctrl+O · 支持拖放"
+                onClick={() => fileInputRef.current?.click()}>
+                <img src={playerLogo} alt="" draggable={false} />
+              </button>
             </div>
           )}
           {dragActive && (
@@ -1368,57 +1251,20 @@ export function App() {
         </div>
 
         {showSettings && snapshot && (
-          <aside className="drawer settings-drawer" aria-label="设置">
-            <div className="drawer-header">
-              <div>
-                <h2>设置</h2>
-                {settingsView === "app" && <p>外观、连接与诊断</p>}
-              </div>
-              <button
-                className="icon-button"
-                aria-label="关闭设置"
-                onClick={() => setShowSettings(false)}
-              >
-                <Icon name="close" />
-              </button>
-            </div>
-
-            <div className="settings-view-switch" role="tablist" aria-label="设置范围">
-              <button
-                role="tab"
-                aria-selected={settingsView === "playback"}
-                className={settingsView === "playback" ? "active" : ""}
-                onClick={() => setSettingsView("playback")}
-              >
-                播放调节
-              </button>
-              <button
-                role="tab"
-                aria-selected={settingsView === "app"}
-                className={settingsView === "app" ? "active" : ""}
-                onClick={() => setSettingsView("app")}
-              >
-                应用设置
-              </button>
-            </div>
-
-            {settingsView === "playback" ? (
-              <>
-                <div className="settings-tabs" role="tablist" aria-label="播放调节分类">
-                  {SETTINGS_TABS.map((tab) => (
-                    <button
-                      key={tab.id}
-                      role="tab"
-                      aria-selected={settingsTab === tab.id}
-                      className={settingsTab === tab.id ? "active" : ""}
-                      onClick={() => setSettingsTab(tab.id)}
-                    >
-                      <Icon name={tab.icon} size={15} />
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-
+          <Modal title="设置" className="settings-dialog" onClose={() => setShowSettings(false)}>
+            <div className="settings-layout">
+              <nav className="settings-nav" role="tablist" aria-label="设置分类" aria-orientation="vertical"
+                onKeyDown={(event) => navigateTabs(event, (index) => { const tab = SETTINGS_TABS[index]; if (tab) setSettingsTab(tab.id); })}>
+                {SETTINGS_TABS.map((tab) => (
+                  <button key={tab.id} id={`tab-${tab.id}`} role="tab" aria-controls="settings-panel"
+                    tabIndex={settingsTab === tab.id ? 0 : -1} aria-selected={settingsTab === tab.id} className={settingsTab === tab.id ? "active" : ""}
+                    onClick={() => setSettingsTab(tab.id)}>
+                    <Icon name={tab.icon} size={17} />{tab.label}
+                  </button>
+                ))}
+              </nav>
+              <div key={settingsTab} className="settings-scroll" id="settings-panel" role="tabpanel" aria-labelledby={`tab-${settingsTab}`}>
+                <h2>{SETTINGS_TABS.find((tab) => tab.id === settingsTab)?.label}</h2>
                 <div className="settings-body">
                   {settingsTab === "picture" && (
                     <section className="settings-group">
@@ -1847,305 +1693,295 @@ export function App() {
                       </details>
                     </section>
                   )}
-                </div>
-              </>
-            ) : (
-              <div className="settings-body">
-                <section className="settings-group">
-                  <div className="group-header">
-                    <h3>外观</h3>
-                    <button
-                      className="reset-button"
-                      aria-label="恢复外观默认"
-                      onClick={() => void resetSettings(APP_IDS)}
-                    >
-                      <Icon name="reset" size={14} />
-                      恢复默认
-                    </button>
-                  </div>
-                  <div className="theme-choice" role="group" aria-label="主题">
-                    {(["system", "dark", "light"] as const).map((value) => (
-                      <button
-                        key={value}
-                        className={String(themeSetting ?? "dark") === value ? "active" : ""}
-                        onClick={() => void applyGlobalPatch({ app: { theme: value } })}
-                      >
-                        <Icon
-                          name={value === "system" ? "monitor" : value === "dark" ? "moon" : "sun"}
-                          size={15}
-                        />
-                        {THEME_LABELS[value]}
-                      </button>
-                    ))}
-                  </div>
-                  <ToggleRow
-                    label={settingLabel("app.reduceMotion")}
-                    checked={Boolean(reduceMotionSetting ?? false)}
-                    onChange={(checked) =>
-                      void applyGlobalPatch({ app: { reduceMotion: checked } })
-                    }
-                  />
-                </section>
 
-                <section className="settings-group">
-                  <div className="group-header">
-                    <h3>Agent 连接</h3>
-                  </div>
-                  <div className={`agent-row ${agentConnected ? "connected" : ""}`}>
-                    <span className="dot" />
-                    {agentConnected ? "Companion 已连接" : "Companion 未连接"}
-                  </div>
-                  <p className="hint">
-                    由本地 Companion 或 MCP 客户端发起，静态安装包默认离线。
-                  </p>
-                </section>
+                  {settingsTab === "appearance" && <>
 
-                <section className="settings-group">
-                  <div className="group-header">
-                    <h3>播放统计</h3>
-                    <button
-                      className="reset-button"
-                      onClick={() => setShowStats((value) => !value)}
-                    >
-                      <Icon name="stats" size={14} />
-                      {showStats ? "隐藏" : "显示"}
-                    </button>
-                  </div>
-                  {showStats ? (
-                    <StatsPanel controller={controller} snapshot={snapshot} />
-                  ) : (
-                    <p className="hint">打开统计后在此显示解码、队列与丢帧信息。</p>
+                    <section className="settings-group">
+                      <div className="group-header">
+                        <h3>外观</h3>
+                        <button
+                          className="reset-button"
+                          aria-label="恢复外观默认"
+                          onClick={() => void resetSettings(APP_IDS)}
+                        >
+                          <Icon name="reset" size={14} />
+                          恢复默认
+                        </button>
+                      </div>
+                      <div className="theme-choice" role="group" aria-label="主题">
+                        {(["system", "dark", "light"] as const).map((value) => (
+                          <button
+                            key={value}
+                            className={String(themeSetting ?? "system") === value ? "active" : ""}
+                            onClick={() => void applyGlobalPatch({ app: { theme: value } })}
+                          >
+                            <Icon
+                              name={value === "system" ? "monitor" : value === "dark" ? "moon" : "sun"}
+                              size={15}
+                            />
+                            {THEME_LABELS[value]}
+                          </button>
+                        ))}
+                      </div>
+                      <ToggleRow
+                        label={settingLabel("app.reduceMotion")}
+                        checked={Boolean(reduceMotionSetting ?? false)}
+                        onChange={(checked) =>
+                          void applyGlobalPatch({ app: { reduceMotion: checked } })
+                        }
+                      />
+                    </section>
+
+                  </>}
+                  {settingsTab === "advanced" && <>
+                    <section className="settings-group">
+                      <div className="group-header">
+                        <h3>Agent 连接</h3>
+                      </div>
+                      <div className={`agent-row ${agentConnected ? "connected" : ""}`}>
+                        <span className="dot" />
+                        {agentConnected ? "Companion 已连接" : "Companion 未连接"}
+                      </div>
+                      <p className="hint">
+                        由本地 Companion 或 MCP 客户端发起，静态安装包默认离线。
+                      </p>
+                    </section>
+
+                    <section className="settings-group">
+                      <div className="group-header">
+                        <h3>播放统计</h3>
+                        <button
+                          className="reset-button"
+                          onClick={() => setShowStats((value) => !value)}
+                        >
+                          <Icon name="stats" size={14} />
+                          {showStats ? "隐藏" : "显示"}
+                        </button>
+                      </div>
+                      {showStats ? (
+                        <StatsPanel controller={controller} snapshot={snapshot} />
+                      ) : (
+                        <p className="hint">打开统计后在此显示解码、队列与丢帧信息。</p>
+                      )}
+                    </section>
+                  </>}
+                  {settingsTab === "shortcuts" && (
+                    <section className="settings-group shortcuts-list">
+                      {[
+                        ["打开文件", "Ctrl / ⌘ + O"], ["播放 / 暂停", "Space"], ["后退 / 前进 5 秒", "← / →"],
+                        ["增大 / 减小音量", "↑ / ↓"], ["减慢 / 加快播放", "Ctrl / ⌘ + ← / →"],
+                        ["恢复正常速度", "R"], ["上一帧 / 下一帧", ", / ."], ["切换全屏", "F"], ["关闭菜单或窗口", "Esc"]
+                      ].map(([label, keys]) => <div className="shortcut-row" key={label}><span>{label}</span><kbd>{keys}</kbd></div>)}
+                    </section>
                   )}
-                </section>
+                </div>
               </div>
-            )}
-          </aside>
+            </div>
+          </Modal>
         )}
 
         {showPlaylist && snapshot && (
-          <aside className="drawer library-drawer" aria-label="媒体库">
-            <div className="drawer-header">
-              <div>
-                <h2>媒体库</h2>
-                <p>播放列表、历史与书签</p>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="关闭媒体库"
-                onClick={() => setShowPlaylist(false)}
-              >
-                <Icon name="close" />
-              </button>
-            </div>
-            <div className="library-tabs" role="tablist">
-              {(
-                [
-                  ["playlist", "播放列表"],
-                  ["history", "历史"],
-                  ["bookmarks", "书签"]
-                ] as const
-              ).map(([tab, label]) => (
-                <button
-                  key={tab}
-                  role="tab"
-                  aria-selected={libraryTab === tab}
-                  className={libraryTab === tab ? "active" : ""}
-                  onClick={() => setLibraryTab(tab)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {libraryTab === "playlist" && (
-              <>
-                <div className="library-url">
-                  <input
-                    value={urlDraft}
-                    placeholder="输入视频 URL"
-                    onChange={(event) => setUrlDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") void addUrlToPlaylist();
-                    }}
-                  />
-                  <button className="secondary-button" onClick={() => void addUrlToPlaylist()}>
-                    添加
-                  </button>
-                </div>
-                {playlistItems.length === 0 ? (
-                  <div className="muted">列表为空。可添加 HTTP 视频地址。</div>
-                ) : (
-                  <div className="library-list">
-                    {playlistItems.map((item) => {
-                      const local =
-                        item.available !== false &&
-                        item.identity !== undefined &&
-                        localFilesRef.current.has(item.identity);
-                      return (
-                        <div
-                          className={`library-item ${
-                            draggingPlaylistIndex === item.index ? "dragging" : ""
-                          }`}
-                          key={`${item.index}-${item.name}`}
-                          draggable
-                          onDragStart={() => setDraggingPlaylistIndex(item.index)}
-                          onDragOver={(event) => event.preventDefault()}
-                          onDrop={(event) => {
-                            event.preventDefault();
-                            if (draggingPlaylistIndex !== null) {
-                              void movePlaylistItem(draggingPlaylistIndex, item.index);
-                            }
-                            setDraggingPlaylistIndex(null);
-                          }}
-                          onDragEnd={() => setDraggingPlaylistIndex(null)}
-                        >
-                          <button
-                            className={`library-main ${
-                              playlistIndex === item.index ? "active" : ""
-                            }`}
-                            onClick={() => void playPlaylistItem(item)}
-                          >
-                            <span>{item.name}</span>
-                            <small>
-                              {item.kind === "file"
-                                ? local
-                                  ? "本地文件"
-                                  : "本地文件 · 需重新选择"
-                                : item.url ?? item.sourceId ?? ""}
-                            </small>
-                          </button>
-                          <button
-                            className="library-remove"
-                            aria-label={`移除 ${item.name}`}
-                            onClick={async () => {
-                              const result = await invoke(ACTION_IDS.playlistRemove, {
-                                index: item.index
-                              });
-                              const items =
-                                (result.output as { items?: PlaylistEntry[] } | undefined)
-                                  ?.items ?? [];
-                              setPlaylistItems(items);
-                            }}
-                          >
-                            <Icon name="close" size={15} />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                {playlistItems.length > 0 && (
-                  <button
-                    className="secondary-button"
-                    onClick={async () => {
-                      await invoke(ACTION_IDS.playlistClear);
-                      setPlaylistItems([]);
-                    }}
-                  >
-                    清空列表
-                  </button>
-                )}
-              </>
-            )}
-
-            {libraryTab === "history" && (
-              <div className="library-list">
-                {historyItems.length === 0 && <div className="muted">暂无播放历史。</div>}
-                {historyItems.map((item) => {
-                  const reopenable =
-                    item.source !== undefined ||
-                    item.id.startsWith("http://") ||
-                    item.id.startsWith("https://");
-                  return (
-                    <button
-                      key={`${item.id}-${item.lastPlayedAt}`}
-                      className={`library-main library-row ${
-                        snapshot.media?.sourceId === item.id ? "active" : ""
-                      }`}
-                      disabled={!reopenable}
-                      onClick={() => void openHistory(item)}
-                      title={reopenable ? "从上次位置继续" : "本地文件需要重新选择"}
-                    >
-                      <span>{item.name}</span>
-                      <small>
-                        {formatTime(item.positionUs)} / {formatTime(item.durationUs)} ·{" "}
-                        {new Date(item.lastPlayedAt).toLocaleString()}
-                      </small>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {libraryTab === "bookmarks" && (
-              <>
-                <button
-                  className="secondary-button"
-                  disabled={!snapshot.media}
-                  onClick={() => void addBookmark()}
-                >
-                  在当前位置添加书签
-                </button>
-                <div className="library-list">
-                  {bookmarkItems.length === 0 && (
-                    <div className="muted">
-                      {snapshot.media ? "当前媒体暂无书签。" : "打开媒体后可添加书签。"}
-                    </div>
-                  )}
-                  {bookmarkItems.map((item) => (
-                    <div className="library-item" key={item.id}>
-                      <button
-                        className="library-main"
-                        onClick={() =>
-                          void invoke(ACTION_IDS.playbackSeek, { positionUs: item.positionUs })
-                        }
-                      >
-                        <span>{item.name}</span>
-                        <small>{formatTime(item.positionUs)}</small>
-                      </button>
-                      <button
-                        className="library-remove"
-                        aria-label={`删除书签 ${item.name}`}
-                        onClick={() =>
-                          void invoke(ACTION_IDS.bookmarksRemove, { id: item.id })
-                        }
-                      >
-                        <Icon name="close" size={15} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </aside>
-        )}
-
-        {showInfo && snapshot?.media && (
-          <div
-            className="info-backdrop"
-            role="presentation"
-            onClick={() => setShowInfo(false)}
-          >
-            <section
-              className="info-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-label="影片信息"
-              onClick={(event) => event.stopPropagation()}
-            >
+          <aside className="library-drawer" aria-label="媒体库">
+            <div className="library-sidebar">
               <div className="drawer-header">
                 <div>
-                  <h2>影片信息</h2>
-                  <p>{snapshot.media.name}</p>
+                  <h2>播放列表</h2>
+                  <p>{playlistItems.length} 个项目</p>
                 </div>
                 <button
                   className="icon-button"
-                  aria-label="关闭影片信息"
-                  onClick={() => setShowInfo(false)}
+                  aria-label="关闭媒体库"
+                  onClick={() => setShowPlaylist(false)}
                 >
                   <Icon name="close" />
                 </button>
               </div>
+              <div className="library-tabs" role="tablist" aria-label="媒体库分类" aria-orientation="vertical"
+                onKeyDown={(event) => navigateTabs(event, (index) => { const tab = LIBRARY_TABS[index]; if (tab) setLibraryTab(tab[0]); })}>
+                {LIBRARY_TABS.map(([tab, label]) => (
+                  <button
+                    key={tab}
+                    role="tab"
+                    tabIndex={libraryTab === tab ? 0 : -1}
+                    aria-selected={libraryTab === tab}
+                    className={libraryTab === tab ? "active" : ""}
+                    onClick={() => setLibraryTab(tab)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+            </div>
+            <div className="library-content">
+              {libraryTab === "playlist" && (
+                <>
+                  <div className="library-url">
+                    <input
+                      value={urlDraft}
+                      aria-label="添加视频地址"
+                      placeholder="输入视频 URL"
+                      onChange={(event) => setUrlDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void addUrlToPlaylist();
+                      }}
+                    />
+                    <button className="secondary-button" onClick={() => void addUrlToPlaylist()}>
+                      添加
+                    </button>
+                  </div>
+                  {playlistItems.length === 0 ? (
+                    <div className="library-empty"><Icon name="library" size={32} /><p>播放列表为空</p>
+                      <button className="secondary-button" onClick={() => folderInputRef.current?.click()}>添加本地文件夹</button></div>
+                  ) : (
+                    <div className="library-list">
+                      {playlistItems.map((item) => {
+                        const local =
+                          item.available !== false &&
+                          item.identity !== undefined &&
+                          localFilesRef.current.has(item.identity);
+                        return (
+                          <div
+                            className={`library-item ${draggingPlaylistIndex === item.index ? "dragging" : ""
+                              }`}
+                            key={`${item.index}-${item.name}`}
+                            draggable
+                            onDragStart={() => setDraggingPlaylistIndex(item.index)}
+                            onDragOver={(event) => event.preventDefault()}
+                            onDrop={(event) => {
+                              event.preventDefault();
+                              if (draggingPlaylistIndex !== null) {
+                                void movePlaylistItem(draggingPlaylistIndex, item.index);
+                              }
+                              setDraggingPlaylistIndex(null);
+                            }}
+                            onDragEnd={() => setDraggingPlaylistIndex(null)}
+                          >
+                            <span className="library-number" aria-hidden="true">{String(item.index + 1).padStart(2, "0")}</span>
+                            <Icon name="film" size={18} />
+                            <button
+                              className={`library-main ${playlistIndex === item.index ? "active" : ""
+                                }`}
+                              onClick={() => void playPlaylistItem(item)}
+                            >
+                              <span>{item.name}</span>
+                              <small>
+                                {item.kind === "file"
+                                  ? local
+                                    ? "本地文件"
+                                    : "本地文件 · 需重新选择"
+                                  : item.url ?? item.sourceId ?? ""}
+                              </small>
+                            </button>
+                            <button
+                              className="library-remove"
+                              aria-label={`移除 ${item.name}`}
+                              onClick={async () => {
+                                const result = await invoke(ACTION_IDS.playlistRemove, {
+                                  index: item.index
+                                });
+                                const items =
+                                  (result.output as { items?: PlaylistEntry[] } | undefined)
+                                    ?.items ?? [];
+                                setPlaylistItems(items);
+                              }}
+                            >
+                              <Icon name="close" size={15} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {playlistItems.length > 0 && (
+                    <button
+                      className="secondary-button"
+                      onClick={async () => {
+                        await invoke(ACTION_IDS.playlistClear);
+                        setPlaylistItems([]);
+                      }}
+                    >
+                      清空列表
+                    </button>
+                  )}
+                </>
+              )}
+
+              {libraryTab === "history" && (
+                <div className="library-list">
+                  {historyItems.length === 0 && <div className="muted">暂无播放历史。</div>}
+                  {historyItems.map((item) => {
+                    const reopenable =
+                      item.source !== undefined ||
+                      item.id.startsWith("http://") ||
+                      item.id.startsWith("https://");
+                    return (
+                      <button
+                        key={`${item.id}-${item.lastPlayedAt}`}
+                        className={`library-main library-row ${snapshot.media?.sourceId === item.id ? "active" : ""
+                          }`}
+                        disabled={!reopenable}
+                        onClick={() => void openHistory(item)}
+                        title={reopenable ? "从上次位置继续" : "本地文件需要重新选择"}
+                      >
+                        <span>{item.name}</span>
+                        <small>
+                          {formatTime(item.positionUs)} / {formatTime(item.durationUs)} ·{" "}
+                          {new Date(item.lastPlayedAt).toLocaleString()}
+                        </small>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {libraryTab === "bookmarks" && (
+                <>
+                  <button
+                    className="secondary-button"
+                    disabled={!snapshot.media}
+                    onClick={() => void addBookmark()}
+                  >
+                    在当前位置添加书签
+                  </button>
+                  <div className="library-list">
+                    {bookmarkItems.length === 0 && (
+                      <div className="muted">
+                        {snapshot.media ? "当前媒体暂无书签。" : "打开媒体后可添加书签。"}
+                      </div>
+                    )}
+                    {bookmarkItems.map((item) => (
+                      <div className="library-item" key={item.id}>
+                        <button
+                          className="library-main"
+                          onClick={() =>
+                            void invoke(ACTION_IDS.playbackSeek, { positionUs: item.positionUs })
+                          }
+                        >
+                          <span>{item.name}</span>
+                          <small>{formatTime(item.positionUs)}</small>
+                        </button>
+                        <button
+                          className="library-remove"
+                          aria-label={`删除书签 ${item.name}`}
+                          onClick={() =>
+                            void invoke(ACTION_IDS.bookmarksRemove, { id: item.id })
+                          }
+                        >
+                          <Icon name="close" size={15} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </aside>
+        )}
+
+        {showInfo && snapshot?.media && (
+          <Modal title="影片信息" className="info-dialog" onClose={() => setShowInfo(false)}>
+            <div className="info-content"><p className="info-name">{snapshot.media.name}</p>
               <div className="info-grid">
                 <span>容器</span>
                 <strong>{snapshot.media.container ?? "未知"}</strong>
@@ -2188,245 +2024,96 @@ export function App() {
                   </div>
                 )}
               </div>
-            </section>
-          </div>
+            </div>
+          </Modal>
+        )}
+        {showUrl && (
+          <Modal title="打开链接" initialFocus="#media-url" className="url-dialog" onClose={() => setShowUrl(false)}>
+            <form className="url-form" onSubmit={(event) => { event.preventDefault(); void openUrl(); }}>
+              <label htmlFor="media-url">视频地址</label>
+              <input id="media-url" type="url" required autoFocus value={openUrlDraft}
+                placeholder="https://example.com/video.mp4" onChange={(event) => setOpenUrlDraft(event.target.value)} />
+              <div className="dialog-actions">
+                <button type="button" className="secondary-button" onClick={() => setShowUrl(false)}>取消</button>
+                <button type="submit" className="primary-button" disabled={!openUrlDraft.trim()}>打开</button>
+              </div>
+            </form>
+          </Modal>
         )}
       </main>
 
-      {snapshot?.media && (
-        <footer className="control-deck" aria-label="播放控制">
-          <ProgressSlider
-            controller={controller}
-            onSeek={(positionUs) => void invoke(ACTION_IDS.playbackSeek, { positionUs })}
-          />
-          <div className="controls-row">
-            <div className="controls-left">
-              <button
-                className="icon-button"
-                aria-label="上一个"
-                data-tooltip="上一个"
-                disabled={playlistItems.length === 0 && !snapshot?.media}
-                onClick={() => void playAdjacent(-1)}
-              >
-                <Icon name="skipBack" />
-              </button>
-              <button
-                className="icon-button play-button"
-                onClick={() => void togglePlay()}
-                aria-label="播放/暂停"
-                title="播放/暂停 (Space)"
-                data-tooltip="播放/暂停 (Space)"
-              >
-                <Icon name={snapshot.phase === "playing" ? "pause" : "play"} size={18} />
-              </button>
-              <button
-                className="icon-button"
-                aria-label="下一个"
-                data-tooltip="下一个"
-                disabled={playlistItems.length === 0 && !snapshot?.media}
-                onClick={() => void playAdjacent(1)}
-              >
-                <Icon name="skipForward" />
-              </button>
-              <PlaybackClock controller={controller} />
-            </div>
-
-            <div className="controls-right">
-              <div className="menu-anchor" data-menu-root>
-                <button
-                  className={`icon-button ${openMenu === "volume" ? "active" : ""}`}
-                  aria-label="音量"
-                  aria-haspopup="menu"
-                  aria-expanded={openMenu === "volume"}
-                  data-tooltip="音量 (↑ / ↓)"
-                  onClick={() => setOpenMenu((value) => (value === "volume" ? null : "volume"))}
-                >
-                  <Icon name={muted || volume === 0 ? "volumeOff" : "volume"} />
-                </button>
-                {openMenu === "volume" && (
-                  <div className="menu-panel volume-menu" role="menu">
-                    <div className="volume-head">
-                      <span>音量</span>
-                      <span>{Math.round(volume * 100)}%</span>
-                    </div>
-                    <input
-                      className="volume"
-                      type="range"
-                      aria-label="音量滑块"
-                      min={0}
-                      max={100}
-                      value={Math.round(volume * 100)}
-                      style={
-                        {
-                          "--range-progress": `${Math.round(volume * 100)}%`
-                        } as CSSProperties
-                      }
-                      onChange={(event) =>
-                        void applyPatch({ audio: { volume: Number(event.target.value) / 100 } })
-                      }
-                    />
-                    <button
-                      className="menu-item"
-                      role="menuitem"
-                      onClick={() => void applyPatch({ audio: { muted: !muted } })}
-                    >
-                      <Icon name={muted ? "volume" : "volumeOff"} size={16} />
-                      {muted ? "取消静音" : "静音"}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <div className="menu-anchor" data-menu-root>
-                <button
-                  className={`rate-button ${openMenu === "rate" ? "active" : ""}`}
-                  aria-label="播放速度"
-                  aria-haspopup="menu"
-                  aria-expanded={openMenu === "rate"}
-                  data-tooltip={`播放速度 ${rate}×`}
-                  onClick={() => setOpenMenu((value) => (value === "rate" ? null : "rate"))}
-                >
-                  {rate}×
-                </button>
-                {openMenu === "rate" && (
-                  <div className="menu-panel rate-menu" role="menu">
-                    <div className="menu-label">播放速度</div>
-                    <button
-                      className="menu-item"
-                      role="menuitem"
-                      onClick={() => void setRateBy(-0.1)}
-                    >
-                      <span className="menu-item-label">减速 0.1×</span>
-                      <span className="menu-meta">Ctrl+←</span>
-                    </button>
-                    <button
-                      className="menu-item"
-                      role="menuitem"
-                      onClick={() => void setRateBy(0.1)}
-                    >
-                      <span className="menu-item-label">加速 0.1×</span>
-                      <span className="menu-meta">Ctrl+→</span>
-                    </button>
-                    <div className="menu-separator" />
-                    {[0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4].map((value) => (
-                      <button
-                        key={value}
-                        className={`menu-item ${rate === value ? "selected" : ""}`}
-                        role="menuitem"
-                        onClick={() => {
-                          void invoke(ACTION_IDS.playbackSetRate, { rate: value });
-                          setOpenMenu(null);
-                        }}
-                      >
-                        <span className="menu-check">
-                          {rate === value && <Icon name="check" size={14} />}
-                        </span>
-                        <span className="menu-item-label">{value}×</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="menu-anchor" data-menu-root>
-                <button
-                  className={`icon-button audio-control ${openMenu === "audio" ? "active" : ""}`}
-                  aria-label="音轨"
-                  aria-haspopup="menu"
-                  aria-expanded={openMenu === "audio"}
-                  data-tooltip="音轨"
-                  onClick={() => setOpenMenu((value) => (value === "audio" ? null : "audio"))}
-                >
-                  <Icon name="audio" />
-                </button>
-                {openMenu === "audio" && (
-                  <div className="menu-panel track-menu" role="menu">
-                    <div className="menu-label">音轨</div>
-                    {(tracksByType.audio ?? []).length === 0 ? (
-                      <div className="menu-empty">无音轨</div>
-                    ) : (
-                      (tracksByType.audio ?? []).map((track) => menuTrackItem(track, "audio"))
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="menu-anchor" data-menu-root>
-                <button
-                  className={`icon-button ${openMenu === "subtitle" ? "active" : ""}`}
-                  aria-label="字幕"
-                  aria-haspopup="menu"
-                  aria-expanded={openMenu === "subtitle"}
-                  data-tooltip="字幕"
-                  onClick={() =>
-                    setOpenMenu((value) => (value === "subtitle" ? null : "subtitle"))
+      <footer className="control-deck" aria-label="播放控制">
+        <div className="controls-left">
+          <button className="icon-button" aria-label="上一个" title="上一个" disabled={!hasMedia}
+            onClick={() => void playAdjacent(-1)}><Icon name="skipBack" size={21} /></button>
+          <button className="icon-button play-button" aria-label="播放/暂停"
+            title={hasMedia ? "播放/暂停 (Space)" : "打开文件 (Space)"} disabled={!controller}
+            onClick={() => void togglePlay()}><Icon name={isPlaying ? "pause" : "play"} size={28} /></button>
+          <button className="icon-button" aria-label="下一个" title="下一个" disabled={!hasMedia}
+            onClick={() => void playAdjacent(1)}><Icon name="skipForward" size={21} /></button>
+        </div>
+        <div className="playback-timeline">
+          {hasMedia && <>
+            <PlaybackClock controller={controller} part="current" />
+            <ProgressSlider controller={controller} onSeek={(positionUs) => void invoke(ACTION_IDS.playbackSeek, { positionUs })} />
+            <PlaybackClock controller={controller} part="duration" />
+            <button ref={rateMenuRef} className={`rate-button ${openMenu === "rate" ? "active" : ""}`}
+              aria-label="播放速度" aria-haspopup="menu" aria-expanded={openMenu === "rate"}
+              onClick={() => setOpenMenu((value) => value === "rate" ? null : "rate")}>{rate}×</button>
+          </>}
+        </div>
+        <div className="controls-right">
+          <button className="tool-button" aria-label={isFullscreen ? "退出全屏" : "全屏"}
+            title={isFullscreen ? "退出全屏 (F)" : "全屏 (F)"}
+            onClick={() => void invoke(ACTION_IDS.uiSet, { fullscreen: !document.fullscreenElement })}>
+            <Icon name={isFullscreen ? "exitFullscreen" : "fullscreen"} size={23} />
+          </button>
+          <div className="menu-anchor" data-menu-root>
+            <button className={`tool-button ${openMenu === "volume" ? "active" : ""}`}
+              aria-label="音量" title="音量" aria-haspopup="dialog" aria-expanded={openMenu === "volume"}
+              onClick={() => setOpenMenu((value) => value === "volume" ? null : "volume")}>
+              <Icon name={muted || volume === 0 ? "volumeOff" : "volume"} size={24} />
+            </button>
+            {openMenu === "volume" && (
+              <div className="menu-panel volume-menu" role="dialog" aria-label="音量调节">
+                <div className="volume-head">
+                  <span>音量</span>
+                  <span>{Math.round(volume * 100)}%</span>
+                </div>
+                <input
+                  className="volume"
+                  type="range"
+                  aria-label="音量滑块"
+                  min={0}
+                  max={100}
+                  value={Math.round(volume * 100)}
+                  style={
+                    {
+                      "--range-progress": `${Math.round(volume * 100)}%`
+                    } as CSSProperties
                   }
+                  onChange={(event) =>
+                    void applyPatch({ audio: { volume: Number(event.target.value) / 100 } })
+                  }
+                />
+                <button
+                  className="menu-item"
+                  role="menuitem"
+                  onClick={() => void applyPatch({ audio: { muted: !muted } })}
                 >
-                  <Icon name="subtitles" />
+                  <Icon name={muted ? "volume" : "volumeOff"} size={16} />
+                  {muted ? "取消静音" : "静音"}
                 </button>
-                {openMenu === "subtitle" && (
-                  <div className="menu-panel track-menu" role="menu">
-                    <div className="menu-label">字幕轨</div>
-                    {(tracksByType.subtitle ?? []).length === 0 ? (
-                      <div className="menu-empty">无字幕轨</div>
-                    ) : (
-                      (tracksByType.subtitle ?? []).map((track) =>
-                        menuTrackItem(track, "subtitle")
-                      )
-                    )}
-                    <div className="menu-separator" />
-                    <button
-                      className="menu-item"
-                      role="menuitem"
-                      onClick={() => {
-                        setOpenMenu(null);
-                        subtitleInputRef.current?.click();
-                      }}
-                    >
-                      <Icon name="folder" />
-                      加载外挂字幕…
-                    </button>
-                    <button
-                      className="menu-item"
-                      role="menuitem"
-                      onClick={() =>
-                        void applyPatch({
-                          subtitle: { visible: !subtitleVisible }
-                        })
-                      }
-                    >
-                      <Icon name={subtitleVisible ? "check" : "close"} size={16} />
-                      {subtitleVisible ? "隐藏字幕" : "显示字幕"}
-                    </button>
-                  </div>
-                )}
               </div>
-
-              <button
-                className="icon-button"
-                aria-label="设置"
-                data-tooltip="播放设置"
-                onClick={() => openSettings("playback")}
-              >
-                <Icon name="settings" />
-              </button>
-
-              <button
-                className="icon-button"
-                aria-label={isFullscreen ? "退出全屏" : "全屏"}
-                data-tooltip={isFullscreen ? "退出全屏 (F)" : "全屏 (F)"}
-                onClick={() =>
-                  void invoke(ACTION_IDS.uiSet, {
-                    fullscreen: !document.fullscreenElement
-                  })
-                }
-              >
-                <Icon name={isFullscreen ? "exitFullscreen" : "fullscreen"} />
-              </button>
-            </div>
+            )}
           </div>
-        </footer>
-      )}
+
+          <button className={`tool-button ${showSettings ? "active" : ""}`} aria-label="设置" title="设置"
+            onClick={() => openSettings()}><Icon name="settings" size={23} /></button>
+          <button className={`tool-button ${showPlaylist ? "active" : ""}`} aria-label="媒体库" title="播放列表"
+            aria-expanded={showPlaylist} onClick={togglePlaylist}><Icon name="library" size={24} /></button>
+        </div>
+      </footer>
 
       {message && (
         <div className="toast" role="status">

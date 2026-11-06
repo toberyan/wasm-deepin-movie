@@ -1,12 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3b82f6"/>
-      <stop offset="1" stop-color="#1d4ed8"/>
-    </linearGradient>
+    <linearGradient id="body" x2="0" y2="1"><stop stop-color="#71757b"/><stop offset="1" stop-color="#30343b"/></linearGradient>
+    <linearGradient id="play" x2="1" y2="1"><stop stop-color="#fff"/><stop offset="1" stop-color="#d6dce3"/></linearGradient>
+    <filter id="shadow" x="-.2" y="-.2" width="1.4" height="1.5"><feDropShadow dy="3" stdDeviation="2" flood-opacity=".19"/></filter>
   </defs>
-  <rect width="256" height="256" rx="56" fill="#101216"/>
-  <rect x="28" y="28" width="200" height="200" rx="42" fill="url(#g)" opacity="0.16"/>
-  <path d="M102 74v108l84-54z" fill="url(#g)"/>
-  <circle cx="64" cy="192" r="8" fill="#60a5fa"/>
+  <g filter="url(#shadow)">
+    <rect x="10" y="9" width="108" height="108" rx="21" fill="url(#body)"/>
+    <rect x="11" y="10" width="106" height="106" rx="20" fill="none" stroke="#fff" stroke-opacity=".17"/>
+    <g fill="#fff" opacity=".14">
+      <rect x="18" y="18" width="16" height="15" rx="4"/><rect x="18" y="43" width="16" height="15" rx="4"/><rect x="18" y="68" width="16" height="15" rx="4"/><rect x="18" y="93" width="16" height="15" rx="4"/>
+      <rect x="94" y="18" width="16" height="15" rx="4"/><rect x="94" y="43" width="16" height="15" rx="4"/><rect x="94" y="68" width="16" height="15" rx="4"/><rect x="94" y="93" width="16" height="15" rx="4"/>
+    </g>
+    <path d="M49 35q-6-4-6 4v49q0 8 6 4l38-24q7-4 0-8Z" fill="url(#play)"/>
+  </g>
 </svg>

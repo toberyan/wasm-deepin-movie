@@ -547,7 +547,7 @@ export const SETTING_DEFINITIONS: Record<SettingId, SettingDefinition> = {
     title: { zh: "主题", en: "Theme" },
     description: { zh: "界面主题。", en: "Interface theme." },
     schema: settingValueSchemas["app.theme"],
-    defaultValue: "dark",
+    defaultValue: "system",
     unit: "enum",
     scope: "global",
     requiresPipelineRebuild: false,

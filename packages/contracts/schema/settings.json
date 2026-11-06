@@ -908,7 +908,7 @@
     },
     {
       "advanced": false,
-      "defaultValue": "dark",
+      "defaultValue": "system",
       "description": {
         "en": "Interface theme.",
         "zh": "界面主题。"

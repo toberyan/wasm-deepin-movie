@@ -208,7 +208,7 @@ async function canvasRedSum(page: Page): Promise<number> {
   });
 }
 
-test("keeps the paused frame visible when the settings drawer resizes the canvas", async ({ page }) => {
+test("keeps the paused frame and canvas size when settings overlay the video", async ({ page }) => {
   await page.goto("/");
   await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
   const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
@@ -231,11 +231,8 @@ test("keeps the paused frame visible when the settings drawer resizes the canvas
   expect(before).toBeGreaterThan(0);
 
   await page.getByRole("button", { name: "设置", exact: true }).click();
-  await page.waitForFunction(
-    (width) =>
-      (document.querySelector("canvas.video-canvas") as HTMLCanvasElement).width < width,
-    beforeWidth
-  );
+  await expect(page.getByRole("dialog", { name: "设置", exact: true })).toBeVisible();
+  expect(await page.locator("canvas.video-canvas").evaluate((canvas) => (canvas as HTMLCanvasElement).width)).toBe(beforeWidth);
   await page.waitForTimeout(200);
   expect(await canvasRedSum(page)).toBeGreaterThan(0);
 });

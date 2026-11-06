@@ -1,6 +1,8 @@
 import type { ReactElement, SVGProps } from "react";
 
 export type IconName =
+  | "menu"
+  | "chevronRight"
   | "play"
   | "pause"
   | "volume"
@@ -61,6 +63,8 @@ export function Icon({ name, size = 18, ...props }: IconProps) {
 }
 
 const paths: Record<IconName, ReactElement> = {
+  menu: <path d="M4 5h16M4 12h16M4 19h11" />,
+  chevronRight: <path d="m9 5 7 7-7 7" />,
   play: <path d="M8 5.5v13l10-6.5-10-6.5Z" fill="currentColor" stroke="none" />,
   pause: (
     <>
