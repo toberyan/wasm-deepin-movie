@@ -1070,20 +1070,16 @@ export class DemuxSession {
   ): DemuxPacket {
     // Matroska stores H.264 as Annex B, while an avcC/avc1 WebCodecs config
     // expects 4-byte length-prefixed NAL units. MP4 packets are already in
-    // that form and do not start with a start code.
+    // that form and must not be rewritten.
     if (stream.codec_id !== 27) return packet;
     const bytes = new Uint8Array(packet.data);
-    if (bytes.length < 4 || bytes[0] !== 0 || bytes[1] !== 0) return packet;
-    const startsWithStartCode =
-      bytes[2] === 1 || (bytes[2] === 0 && bytes[3] === 1);
-    if (!startsWithStartCode) return packet;
-    const converted = annexBToAvccSample(bytes);
-    if (!converted) return packet;
+    const sample = toWebCodecsH264Sample(bytes);
+    if (sample === bytes) return packet;
     return {
       ...packet,
-      data: converted.buffer.slice(
-        converted.byteOffset,
-        converted.byteOffset + converted.byteLength
+      data: sample.buffer.slice(
+        sample.byteOffset,
+        sample.byteOffset + sample.byteLength
       ) as ArrayBuffer
     };
   }
@@ -1315,6 +1311,46 @@ function annexBToAvcC(data: Uint8Array): Uint8Array | null {
   offset += 2;
   output.set(pps, offset);
   return output;
+}
+
+/**
+ * Returns the H.264 sample as WebCodecs' avcC/avc1 decoder expects it: 4-byte
+ * length-prefixed NAL units.
+ *
+ * Matroska and AVI carry Annex B samples, but MP4/MOV samples already use
+ * length prefixes, and a length prefix with zero high bytes looks exactly like
+ * an Annex B start code — a 256..511 byte NAL starts `00 00 01 xx`. Rewriting
+ * such a sample corrupts it (the length is inflated and one payload byte turns
+ * into the NAL header), which makes Chrome's decoder fail with "Decoding
+ * error." seconds into playback. Only samples that do not already describe
+ * complete length-prefixed NAL units are converted.
+ */
+export function toWebCodecsH264Sample(data: Uint8Array): Uint8Array {
+  if (data.length < 4 || data[0] !== 0 || data[1] !== 0) return data;
+  const startsWithStartCode = data[2] === 1 || (data[2] === 0 && data[3] === 1);
+  if (!startsWithStartCode) return data;
+  if (isLengthPrefixedSample(data)) return data;
+  return annexBToAvccSample(data) ?? data;
+}
+
+/**
+ * True when `data` is exactly a sequence of 4-byte length-prefixed NAL units,
+ * the sample shape an avcC/avc1 decoder consumes.
+ */
+export function isLengthPrefixedSample(data: Uint8Array): boolean {
+  let offset = 0;
+  while (offset + 4 <= data.length) {
+    const length =
+      (((data[offset] ?? 0) << 24) |
+        ((data[offset + 1] ?? 0) << 16) |
+        ((data[offset + 2] ?? 0) << 8) |
+        (data[offset + 3] ?? 0)) >>>
+      0;
+    if (length === 0) return false;
+    offset += 4 + length;
+    if (offset > data.length) return false;
+  }
+  return offset === data.length;
 }
 
 function annexBToAvccSample(data: Uint8Array): Uint8Array | null {
