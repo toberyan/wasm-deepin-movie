@@ -4,13 +4,17 @@ import { extname, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  createCoreRegistry,
   PlayerError,
   type ActionId,
   type InvokeResult
 } from "@wasm-player/contracts";
 import type { ControlBridge, McpSessionInfo, McpSourceInfo } from "@wasm-player/mcp-server";
 import { MediaBroker } from "./broker";
+import { RemoteProxy } from "./remote-proxy";
 import { tokenMatches } from "./token";
+
+const ACTION_REGISTRY = createCoreRegistry();
 
 export interface CompanionServerOptions {
   host: string;
@@ -18,6 +22,7 @@ export interface CompanionServerOptions {
   token: string;
   webRoot: string;
   broker: MediaBroker;
+  remote: RemoteProxy;
 }
 
 interface PendingRequest {
@@ -96,6 +101,7 @@ export class CompanionServer implements ControlBridge {
   private readonly sessions = new Map<string, Session>();
   private activeSessionId: string | null = null;
   private requestSeq = 0;
+  private connectionSeq = 0;
   private baseUrl = "";
   private ready = false;
 
@@ -191,6 +197,15 @@ export class CompanionServer implements ControlBridge {
     return this.invokeOnSession(session, action, params, 30_000);
   }
 
+  /** Invoke on a specific browser session (agent-controlled multi-session). */
+  async invokeOn(sessionId: string | undefined, action: ActionId, params: unknown): Promise<InvokeResult> {
+    if (!sessionId) return this.invoke(action, params);
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new PlayerError("SESSION_CLOSED", `session ${sessionId} is not connected`);
+    this.activeSessionId = sessionId;
+    return this.invokeOnSession(session, action, params, 30_000);
+  }
+
   private currentSession(): Session {
     if (this.activeSessionId) {
       const active = this.sessions.get(this.activeSessionId);
@@ -241,24 +256,41 @@ export class CompanionServer implements ControlBridge {
   }
 
   private async resolveSourceId(action: ActionId, rawParams: unknown): Promise<unknown> {
-    if (action !== "media.open" || !rawParams || typeof rawParams !== "object") return rawParams;
-    const params = rawParams as { source?: { kind?: string; sourceId?: string; name?: string } };
-    if (params.source?.kind !== "sourceId") return rawParams;
-    const sourceId = params.source.sourceId;
-    if (!sourceId) throw new PlayerError("INVALID_REQUEST", "sourceId is required");
-    const media = await this.options.broker.resolve(sourceId);
-    if (!media) {
-      throw new PlayerError("SOURCE_NOT_AUTHORIZED", `source is not authorized: ${sourceId}`);
-    }
-    return {
-      ...params,
-      source: {
+    if (!rawParams || typeof rawParams !== "object") return rawParams;
+
+    const resolveOne = async (source: {
+      kind?: string;
+      sourceId?: string;
+      name?: string;
+    }): Promise<unknown> => {
+      if (source.kind !== "sourceId") return source;
+      const sourceId = source.sourceId;
+      if (!sourceId) throw new PlayerError("INVALID_REQUEST", "sourceId is required");
+      const media = await this.options.broker.resolve(sourceId);
+      if (!media) {
+        throw new PlayerError("SOURCE_NOT_AUTHORIZED", `source is not authorized: ${sourceId}`);
+      }
+      return {
         kind: "url",
         url: `${this.baseUrl}/broker/media?path=${encodeURIComponent(sourceId)}`,
-        name: params.source.name ?? media.name,
+        name: source.name ?? media.name,
         sizeBytes: media.size
-      }
+      };
     };
+
+    if (action === "playlist.add") {
+      const params = rawParams as {
+        sources?: { kind?: string; sourceId?: string; name?: string }[];
+      };
+      if (!Array.isArray(params.sources)) return rawParams;
+      const sources = await Promise.all(params.sources.map((source) => resolveOne(source)));
+      return { ...params, sources };
+    }
+
+    if (action !== "media.open" && action !== "media.probe") return rawParams;
+    const params = rawParams as { source?: { kind?: string; sourceId?: string; name?: string } };
+    if (params.source?.kind !== "sourceId") return rawParams;
+    return { ...params, source: await resolveOne(params.source) };
   }
 
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -270,6 +302,146 @@ export class CompanionServer implements ControlBridge {
       const url = new URL(request.url ?? "/", this.baseUrl || "http://127.0.0.1");
       if (url.pathname === "/health") {
         sendJson(response, 200, { ok: true, sessions: this.sessions.size });
+        return;
+      }
+      // Native agent bridge endpoints. The page bootstrap stays same-origin and
+      // open; everything else requires the companion token.
+      const needsToken = url.pathname.startsWith("/api/") && url.pathname !== "/api/bootstrap";
+      if (needsToken && !this.validToken(request)) {
+        sendText(response, 401, "invalid token");
+        return;
+      }
+      if (url.pathname === "/api/actions") {
+        sendJson(response, 200, { ok: true, actions: ACTION_REGISTRY.describe() });
+        return;
+      }
+      if (url.pathname === "/api/action" && request.method === "POST") {
+        const body = await readJsonBody(request);
+        const action = typeof body.action === "string" ? body.action : "";
+        if (!ACTION_REGISTRY.has(action)) {
+          sendJson(response, 200, {
+            ok: false,
+            error: { code: "INVALID_REQUEST", message: `unknown action: ${action}` }
+          });
+          return;
+        }
+        try {
+          const result = await this.invokeOn(
+            typeof body.sessionId === "string" ? body.sessionId : undefined,
+            action,
+            body.params ?? {}
+          );
+          sendJson(response, 200, { ok: result.status !== "rejected", result });
+        } catch (error) {
+          sendPlayerError(response, error);
+        }
+        return;
+      }
+      if (url.pathname === "/api/state") {
+        const sessionId = url.searchParams.get("sessionId") ?? undefined;
+        try {
+          const result = await this.invokeOn(sessionId, "state.get", {});
+          sendJson(response, 200, { ok: result.status !== "rejected", result });
+        } catch (error) {
+          sendPlayerError(response, error);
+        }
+        return;
+      }
+      if (url.pathname === "/api/sources") {
+        sendJson(response, 200, { ok: true, sources: await this.options.broker.list(this.baseUrl) });
+        return;
+      }
+      if (url.pathname === "/api/roots") {
+        if (request.method === "POST") {
+          const body = await readJsonBody(request);
+          const path = typeof body.path === "string" ? body.path : "";
+          const added = await this.options.broker.addRoot(path);
+          if (!added) {
+            sendJson(response, 200, {
+              ok: false,
+              error: { code: "INVALID_REQUEST", message: `not a directory: ${path}` }
+            });
+            return;
+          }
+        }
+        sendJson(response, 200, { ok: true, roots: this.options.broker.listRoots() });
+        return;
+      }
+      if (url.pathname === "/api/source" && request.method === "POST") {
+        const body = await readJsonBody(request);
+        if (typeof body.path === "string") {
+          const source = await this.options.broker.describePath(body.path);
+          if (!source) {
+            sendJson(response, 200, {
+              ok: false,
+              error: { code: "SOURCE_NOT_AUTHORIZED", message: "path is outside allowed roots" }
+            });
+            return;
+          }
+          sendJson(response, 200, {
+            ok: true,
+            source: {
+              ...source,
+              url: `${this.baseUrl}/broker/media?path=${encodeURIComponent(source.sourceId)}`
+            }
+          });
+          return;
+        }
+        if (typeof body.url === "string") {
+          try {
+            const target = await this.options.remote.validate(body.url);
+            const proxied =
+              `${this.baseUrl}/broker/remote?url=${encodeURIComponent(target.toString())}` +
+              `&token=${encodeURIComponent(this.options.token)}`;
+            sendJson(response, 200, {
+              ok: true,
+              source: {
+                sourceId: `remote:${target.host}${target.pathname}`,
+                name: target.pathname.split("/").pop() || target.hostname,
+                sizeBytes: 0,
+                url: proxied
+              }
+            });
+          } catch (error) {
+            sendPlayerError(response, error);
+          }
+          return;
+        }
+        sendJson(response, 200, {
+          ok: false,
+          error: { code: "INVALID_REQUEST", message: "path or url is required" }
+        });
+        return;
+      }
+      if (url.pathname === "/api/sessions") {
+        sendJson(response, 200, { ok: true, sessions: await this.listSessions() });
+        return;
+      }
+      if (url.pathname === "/api/sessions/attach" && request.method === "POST") {
+        const body = await readJsonBody(request);
+        const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+        const session = await this.attachSession(sessionId);
+        if (!session) {
+          sendJson(response, 200, {
+            ok: false,
+            error: { code: "SESSION_CLOSED", message: `session ${sessionId} is not connected` }
+          });
+          return;
+        }
+        sendJson(response, 200, { ok: true, session });
+        return;
+      }
+      if (url.pathname === "/broker/remote") {
+        if (!tokenMatches(this.options.token, url.searchParams.get("token"))) {
+          sendText(response, 403, "invalid token");
+          return;
+        }
+        try {
+          await this.options.remote.serve(request, response, url.searchParams.get("url") ?? "");
+        } catch (error) {
+          if (!response.headersSent) sendPlayerError(response, error);
+          else response.destroy();
+        }
         return;
       }
       if (url.pathname === "/api/bootstrap") {
@@ -358,6 +530,7 @@ export class CompanionServer implements ControlBridge {
   }
 
   private handleConnection(socket: WebSocket): void {
+    const conn = ++this.connectionSeq;
     let session: Session | null = null;
     const helloTimer = setTimeout(() => {
       if (!session) socket.close(1008, "hello timeout");
@@ -393,6 +566,7 @@ export class CompanionServer implements ControlBridge {
         this.sessions.set(message.sessionId, session);
         if (!this.activeSessionId) this.activeSessionId = message.sessionId;
         socket.send(JSON.stringify({ type: "welcome", sessionId: message.sessionId }));
+        console.error(`[companion] session connected ${message.sessionId} conn=${conn}`);
         return;
       }
       if (message.type === "response" && session) {
@@ -402,10 +576,13 @@ export class CompanionServer implements ControlBridge {
         pending.resolve(message.result);
       }
     });
-    socket.on("close", () => {
+    socket.on("close", (code, reason) => {
       clearTimeout(helloTimer);
       if (!session) return;
-      this.sessions.delete(session.sessionId);
+      console.error(
+        `[companion] session closed ${session.sessionId} conn=${conn} code=${code} reason=${reason.toString()} mapSame=${this.sessions.get(session.sessionId) === session}`
+      );
+      if (this.sessions.get(session.sessionId) === session) this.sessions.delete(session.sessionId);
       if (this.activeSessionId === session.sessionId) {
         this.activeSessionId = this.sessions.keys().next().value ?? null;
       }
@@ -422,6 +599,12 @@ export class CompanionServer implements ControlBridge {
   private get port(): number {
     const address = this.httpServer.address();
     return address && typeof address !== "string" ? address.port : this.options.port;
+  }
+
+  private validToken(request: IncomingMessage): boolean {
+    const header = request.headers["x-companion-token"];
+    const token = Array.isArray(header) ? header[0] : header;
+    return tokenMatches(this.options.token, token);
   }
 
   private validHost(request: IncomingMessage): boolean {
@@ -471,4 +654,39 @@ function sendJson(
     ...headers
   });
   response.end(body);
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = chunk as Buffer;
+    size += buffer.length;
+    if (size > 1024 * 1024) throw new PlayerError("INVALID_REQUEST", "request body too large");
+    chunks.push(buffer);
+  }
+  if (chunks.length === 0) return {};
+  try {
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    throw new PlayerError("INVALID_REQUEST", "invalid json");
+  }
+}
+
+function sendPlayerError(response: ServerResponse, error: unknown): void {
+  if (error instanceof PlayerError) {
+    sendJson(response, 200, { ok: false, error: error.toJSON() });
+    return;
+  }
+  sendJson(response, 200, {
+    ok: false,
+    error: {
+      code: "INTERNAL",
+      message: error instanceof Error ? error.message : String(error),
+      recoverable: false
+    }
+  });
 }

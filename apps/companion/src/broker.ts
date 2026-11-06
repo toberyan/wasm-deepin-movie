@@ -1,7 +1,7 @@
 import { createReadStream, type Dirent } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { basename, extname, relative, resolve, sep } from "node:path";
+import { basename, extname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const MEDIA_EXTENSIONS = new Set([
   ".mp4",
@@ -86,6 +86,25 @@ export class MediaBroker {
     }
   }
 
+  listRoots(): string[] {
+    return [...this.roots];
+  }
+
+  /** Add a user-approved media root for this session. */
+  async addRoot(path: string): Promise<boolean> {
+    if (!path) return false;
+    let real: string;
+    try {
+      real = await realpath(path);
+    } catch {
+      return false;
+    }
+    const info = await stat(real).catch(() => null);
+    if (!info || !info.isDirectory()) return false;
+    if (!this.roots.includes(real)) this.roots.push(real);
+    return true;
+  }
+
   async list(baseUrl: string): Promise<BrokerSource[]> {
     const results: Omit<BrokerSource, "url">[] = [];
     const seen = new Set<string>();
@@ -135,6 +154,39 @@ export class MediaBroker {
       } catch {
         continue;
       }
+    }
+    return null;
+  }
+
+  /**
+   * Resolve an absolute user path against the allowed roots and return its
+   * broker identity. Used by the agent bridge; the player page never sees a
+   * filesystem path.
+   */
+  async describePath(input: string): Promise<Omit<BrokerSource, "url"> | null> {
+    if (!input || input.includes("\0") || !isAbsolute(input)) return null;
+    let real: string;
+    try {
+      real = await realpath(input);
+    } catch {
+      return null;
+    }
+    for (const root of this.roots) {
+      let realRoot: string;
+      try {
+        realRoot = await realpath(root);
+      } catch {
+        continue;
+      }
+      if (real !== realRoot && !real.startsWith(realRoot + sep)) continue;
+      const info = await stat(real).catch(() => null);
+      if (!info || !info.isFile()) continue;
+      if (!MEDIA_EXTENSIONS.has(extname(real).toLowerCase())) return null;
+      return {
+        sourceId: relative(realRoot, real).split(sep).join("/"),
+        name: basename(real),
+        sizeBytes: info.size
+      };
     }
     return null;
   }

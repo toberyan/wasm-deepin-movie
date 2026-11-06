@@ -37,6 +37,7 @@ import {
   type RateResult,
   type SeekResult,
   type SettingsApplyResult,
+  type StepDirection,
   type SubtitleLoadInput
 } from "@wasm-player/media-engine";
 import {
@@ -96,10 +97,17 @@ export interface BrowserMediaEngineOptions {
 
 const VIDEO_QUEUE_LIMITS = {
   maxFrames: 64,
-  maxBytes: 64 * 1024 * 1024,
+  // Large frames (2296x1522 ~= 5.2 MiB each) hit the old 64 MiB cap after
+  // only 12 frames, so the queue dropped the frames that were due next and
+  // the video visibly skipped. Keep enough frames for the 1 s look-ahead.
+  maxBytes: 160 * 1024 * 1024,
   maxDurationUs: 2_000_000
 };
 const VIDEO_QUEUE_TARGET_FRAMES = 12;
+/** Upper bound for one decoded frame while stepping, including a keyframe seek. */
+const STEP_FRAME_TIMEOUT_MS = 3000;
+/** Upper bound for scanning decoded timestamps back to the playhead. */
+const STEP_SCAN_BUDGET_MS = 4000;
 
 function nowSeconds(): number {
   return performance.now() / 1000;
@@ -154,6 +162,7 @@ function toWorkerSource(source: EngineMediaSource): {
   name?: string;
   headers?: Record<string, string>;
   sizeBytes?: number;
+  identity?: string;
 } {
   if (source.kind === "file") {
     const workerSource: {
@@ -161,9 +170,11 @@ function toWorkerSource(source: EngineMediaSource): {
       file: File;
       name?: string;
       sizeBytes?: number;
+      identity?: string;
     } = { kind: "file", file: source.file as File };
     if (source.name !== undefined) workerSource.name = source.name;
     if (source.sizeBytes !== undefined) workerSource.sizeBytes = source.sizeBytes;
+    if (source.identity !== undefined) workerSource.identity = source.identity;
     return workerSource;
   }
   if (source.kind === "url") {
@@ -236,7 +247,11 @@ export class BrowserMediaEngine implements MediaEngine {
   private videoWasm = false;
   private audioWasm = false;
   private previewFramePending = false;
-  private videoQueue = new VideoFrameQueue<QueuedVideoFrame>(VIDEO_QUEUE_LIMITS);
+  private videoQueue = new VideoFrameQueue<QueuedVideoFrame>(VIDEO_QUEUE_LIMITS, (expired) => {
+    // Frames whose presentation time passed were never rendered, so nobody else
+    // can close them; release the decoder resource immediately.
+    expired.frame?.close();
+  });
   private readonly clock = new MediaClock("monotonic");
   private readonly settings = new Map<SettingId, EffectiveValue>();
   private readonly subtitleTracks = new Map<number, SubtitleTrack>();
@@ -252,11 +267,23 @@ export class BrowserMediaEngine implements MediaEngine {
   private videoPacketsInFlight = 0;
   private seekTargetUs = 0;
   private audioBufferedUs = 0;
+  /** Presentation timestamp of the frame currently on screen. */
+  private displayedFrameUs = Number.NEGATIVE_INFINITY;
+  /** Exponential estimate of one frame, refined from decoded timestamps. */
+  private frameDurationUs = 0;
+  private lastDecodedTimestampUs = Number.NEGATIVE_INFINITY;
+  private frameWaiters: Array<() => void> = [];
   private renderHandle: number | null = null;
   private lastPositionEmit = 0;
   private lastStatsEmit = 0;
   private lastSubtitleText = "";
+  private audioClockTrusted = true;
   private readonly listeners = new Set<EngineListener>();
+  private readonly resumeAudioOnGesture = (): void => {
+    if (this.audioOutput) {
+      void this.audioOutput.resume().catch(() => undefined);
+    }
+  };
 
   constructor(options: BrowserMediaEngineOptions) {
     this.canvas = options.canvas;
@@ -275,6 +302,7 @@ export class BrowserMediaEngine implements MediaEngine {
     this.resizeObserver?.observe(options.canvas);
     this.syncCanvasSize();
     this.capabilities = this.detectCapabilities();
+    window.addEventListener("pointerdown", this.resumeAudioOnGesture, { passive: true });
   }
 
   async open(request: OpenMediaRequest): Promise<MediaOpenResult> {
@@ -287,6 +315,10 @@ export class BrowserMediaEngine implements MediaEngine {
     this.warnings = [];
     this.stats = { ...EMPTY_STATS };
     this.audioBufferedUs = 0;
+    this.audioClockTrusted = true;
+    this.displayedFrameUs = Number.NEGATIVE_INFINITY;
+    this.frameDurationUs = 0;
+    this.lastDecodedTimestampUs = Number.NEGATIVE_INFINITY;
     this.lastSubtitleText = "";
     this.threadFallbackWarning = null;
     this.opening = true;
@@ -378,6 +410,8 @@ export class BrowserMediaEngine implements MediaEngine {
       demux = this.createDemuxClient();
       this.demux = demux;
       variant = "wasm-player-p0";
+      // The custom H.264 demuxer is single-threaded; WebCodecs still decodes
+      // the resulting packets, so threaded libav is not required here.
       probe = await demux.open(workerSource as Parameters<DemuxWorkerClient["open"]>[0], {
         name,
         ...(this.libavBase ? { libavBase: this.libavBase } : {}),
@@ -418,15 +452,15 @@ export class BrowserMediaEngine implements MediaEngine {
       if (
         force.video === undefined &&
         variant === "wasm-player-p0" &&
+        isMatroskaFile(name) &&
         probe.media.streams.some(
-          (stream) =>
-            stream.type === "video" &&
-            stream.codec === "h264" &&
-            (isMatroskaFile(name) || (stream.width ?? 0) % 16 !== 0)
+          (stream) => stream.type === "video" && stream.codec === "h264"
         )
       ) {
         // H.264 in Matroska is stored as Annex B/AVCC variants that Chrome's
         // WebCodecs decoder handles inconsistently; use the custom decoder.
+        // MP4 H.264 can stay on WebCodecs even when its width is not 16-aligned;
+        // only the demuxer needs the custom build.
         force.video = "wasm";
       }
       const routed = routeTracks(probe.media.streams, support, { force });
@@ -563,6 +597,9 @@ export class BrowserMediaEngine implements MediaEngine {
             audioOutput.setVolume(this.volume, this.muted);
             audioOutput.setGainDb(this.settingValue("audio.gainDb", 0));
             audioOutput.setBalance(this.settingValue("audio.balance", 0));
+            audioOutput.setChannelMode(
+              this.settingValue<"stereo" | "left" | "right">("audio.channel", "stereo")
+            );
             audioOutput.setEqualizer(
               this.settingValue<number[]>("audio.eq", Array.from({ length: 10 }, () => 0))
             );
@@ -615,7 +652,7 @@ export class BrowserMediaEngine implements MediaEngine {
       this.startPump();
       if (videoTrack) {
         try {
-          await this.waitForFirstFrame(7000);
+          await this.waitForFirstFrame(10_000);
         } catch (error) {
           if (
             !this.closed &&
@@ -648,7 +685,15 @@ export class BrowserMediaEngine implements MediaEngine {
               this.fallbackInProgress = false;
             }
           }
-          throw error;
+          if (videoWasm || this.fallbackInProgress) {
+            // Some MKV/legacy samples take longer than the first-frame
+            // deadline on the first open. Keep the session usable and let the
+            // renderer show the frame when it arrives instead of failing the
+            // whole media.open with TIMEOUT.
+            this.warnings.push("video first frame delayed; media remains open");
+          } else {
+            throw error;
+          }
         }
       }
       if (request.autoPlay) await this.play();
@@ -719,18 +764,15 @@ export class BrowserMediaEngine implements MediaEngine {
     if (this.phase === "playing") return;
     if (this.phase === "ended") await this.seek(0);
     const now = nowSeconds();
+    // Never await AudioContext.resume() here. Chromium keeps the promise
+    // pending until a user gesture, which previously made media.open/play
+    // time out after ~30 s. Start video immediately and let the first
+    // pointer interaction resume audio in the background.
+    this.clock.setSource("monotonic", this.positionUs, now);
     if (this.audioOutput) {
-      try {
-        await this.audioOutput.resume();
-      } catch (error) {
-        this.clock.pause(now);
-        throw error;
-      }
       this.audioOutput.setPaused(false);
       this.audioOutput.setRate(this.rate);
-      this.clock.setSource("audio", this.positionUs, now);
-    } else {
-      this.clock.setSource("monotonic", this.positionUs, now);
+      void this.audioOutput.resume().catch(() => undefined);
     }
     this.clock.play(now);
     const previous = this.phase;
@@ -786,6 +828,7 @@ export class BrowserMediaEngine implements MediaEngine {
     this.audioBufferedUs = 0;
     this.seekTargetUs = target;
     this.previewFramePending = true;
+    this.displayedFrameUs = Number.NEGATIVE_INFINITY;
     this.demuxEof = false;
     this.decoderFlushed = false;
     await this.videoDecoder?.reset(epoch);
@@ -798,6 +841,7 @@ export class BrowserMediaEngine implements MediaEngine {
     // paused seeks still show the target frame and playing seeks resume there.
     this.positionUs = target;
     this.clock.seek(target, now);
+    this.audioClockTrusted = true;
     this.feedPackets(result.packets, epoch);
     this.processWasmOutput(result, epoch);
     if (wasPlaying) {
@@ -822,13 +866,184 @@ export class BrowserMediaEngine implements MediaEngine {
     return output;
   }
 
-  async step(frames: number): Promise<void> {
+  /**
+   * Step by decoded frame timestamps. Forward consumes the already decoded
+   * frames in presentation order; backward seeks to a keyframe before the
+   * current frame, scans the decoded timestamps back to the playhead and then
+   * seeks to the exact frame, so 24/25/60 fps and variable frame rate media
+   * all land on real frames instead of a fixed 30 fps guess.
+   */
+  async step(frames: number, direction: StepDirection = "forward"): Promise<void> {
     this.requireMedia();
     if (this.phase === "playing") await this.pause();
-    const frameUs = this.videoTrack ? 1_000_000 / 30 : 33_333;
-    const target = Math.min(this.durationUs, this.positionUs + frames * frameUs);
-    await this.seek(target);
-    await this.waitForFirstFrame(3000);
+    if (frames <= 0) return;
+    if (!this.videoTrack) {
+      const frameUs = this.estimatedFrameUs();
+      const delta = frames * frameUs * (direction === "backward" ? -1 : 1);
+      await this.seek(Math.min(this.durationUs, Math.max(0, this.positionUs + delta)));
+      return;
+    }
+    if (direction === "backward") {
+      await this.stepBackward(frames);
+      return;
+    }
+    await this.stepForward(frames);
+  }
+
+  private async stepForward(frames: number): Promise<void> {
+    let anchorUs = this.displayedFrameUs;
+    if (!Number.isFinite(anchorUs)) anchorUs = this.positionUs;
+    let chosen: QueuedVideoFrame | null = null;
+    for (let i = 0; i < frames; i++) {
+      const next = await this.takeFrameAfter(anchorUs);
+      if (!next) break;
+      if (chosen) this.closeQueuedFrame(chosen);
+      chosen = next;
+      anchorUs = next.timestampUs;
+    }
+    if (!chosen) {
+      throw new PlayerError("TIMEOUT", "no decoded video frame is available to step to", {
+        recoverable: true
+      });
+    }
+    this.presentSteppedFrame(chosen);
+  }
+
+  private async stepBackward(frames: number): Promise<void> {
+    const anchorUs = Number.isFinite(this.displayedFrameUs)
+      ? this.displayedFrameUs
+      : this.positionUs;
+    if (anchorUs <= 0) return;
+    const frameUs = this.estimatedFrameUs();
+    // A variable frame rate stream can have arbitrarily large gaps between
+    // frames, so the estimate is only a starting point: look back at least one
+    // second and widen the window until a frame before the playhead is found.
+    let windowUs = Math.max(frameUs * (frames + 2), 1_000_000);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const fromUs = Math.max(0, anchorUs - windowUs);
+      await this.seek(fromUs);
+      this.previewFramePending = false;
+      const seen: number[] = [];
+      let reachedAnchor = false;
+      const deadline = performance.now() + STEP_SCAN_BUDGET_MS;
+      for (;;) {
+        // The seek already dropped pre-target frames, so the queue now starts
+        // at the first frame at or after the window start.
+        const frame = await this.takeFrameAfter(Number.NEGATIVE_INFINITY);
+        if (!frame) break;
+        const timestampUs = frame.timestampUs;
+        this.closeQueuedFrame(frame);
+        if (timestampUs >= anchorUs - 1) {
+          reachedAnchor = true;
+          break;
+        }
+        seen.push(timestampUs);
+        if (seen.length > frames) seen.shift();
+        if (performance.now() >= deadline) break;
+      }
+      if (!reachedAnchor) {
+        // A stalled scan means the window is not the problem; widening it would
+        // only decode more frames again. Fail instead of guessing.
+        await this.seek(anchorUs);
+        throw new PlayerError("TIMEOUT", "timed out decoding frames for backward stepping", {
+          recoverable: true
+        });
+      }
+      // Enough earlier frames, or the media start leaves fewer than requested.
+      if (seen.length > 0 && (seen.length >= frames || fromUs === 0)) {
+        const targetUs = seen[0] as number;
+        await this.seek(targetUs);
+        this.displayedFrameUs = targetUs;
+        return;
+      }
+      if (fromUs === 0) {
+        // Scanned from the very beginning: the playhead is already on the
+        // first frame of the media.
+        await this.seek(anchorUs);
+        this.displayedFrameUs = anchorUs;
+        return;
+      }
+      // The window holds too few earlier frames: look back further instead of
+      // accepting a shorter step than the caller asked for.
+      windowUs *= 4;
+    }
+    // No earlier frame could be decoded. Restoring the playhead and reporting
+    // the failure is honest; moving the position while showing the same frame
+    // would not be.
+    await this.seek(anchorUs);
+    throw new PlayerError("TIMEOUT", "no earlier frame found for backward stepping", {
+      recoverable: true
+    });
+  }
+
+  /** Next decoded frame whose timestamp is strictly after `anchorUs`. */
+  private async takeFrameAfter(anchorUs: number): Promise<QueuedVideoFrame | null> {
+    const deadline = performance.now() + STEP_FRAME_TIMEOUT_MS;
+    for (;;) {
+      const head = this.videoQueue.peek();
+      if (head) {
+        if (head.timestampUs > anchorUs) return this.videoQueue.takeFirst() ?? null;
+        const stale = this.videoQueue.takeFirst();
+        if (stale) this.closeQueuedFrame(stale);
+        continue;
+      }
+      if (this.closed) return null;
+      if (this.demuxEof && this.videoPacketsInFlight === 0) return null;
+      if (performance.now() >= deadline) return null;
+      this.startPump();
+      await this.waitForDecodedFrame(50);
+    }
+  }
+
+  private presentSteppedFrame(queued: QueuedVideoFrame): void {
+    if (queued.frame) {
+      this.renderer.render(queued.frame);
+      this.closeQueuedFrame(queued);
+    } else if (queued.image) {
+      this.renderer.renderImage(queued.image);
+    }
+    this.stats.renderedFrames += 1;
+    this.displayedFrameUs = queued.timestampUs;
+    this.previewFramePending = false;
+    this.seekTargetUs = Number.NEGATIVE_INFINITY;
+    this.positionUs = queued.timestampUs;
+    this.clock.seek(queued.timestampUs, nowSeconds());
+    this.emit({
+      type: "position",
+      positionUs: this.positionUs,
+      durationUs: this.durationUs
+    });
+  }
+
+  private closeQueuedFrame(queued: QueuedVideoFrame): void {
+    queued.frame?.close();
+    queued.frame = undefined;
+  }
+
+  private estimatedFrameUs(): number {
+    if (this.frameDurationUs > 0) return this.frameDurationUs;
+    return 1_000_000 / 30;
+  }
+
+  private waitForDecodedFrame(timeoutMs: number): Promise<void> {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const finish = (): void => {
+      clearTimeout(timer);
+      const index = this.frameWaiters.indexOf(wake);
+      if (index >= 0) this.frameWaiters.splice(index, 1);
+      resolve();
+    };
+    const wake = (): void => finish();
+    const timer = setTimeout(finish, timeoutMs);
+    this.frameWaiters.push(wake);
+    return promise;
+  }
+
+  private notifyFrameWaiters(): void {
+    if (this.frameWaiters.length === 0) return;
+    const waiters = this.frameWaiters;
+    this.frameWaiters = [];
+    for (const wake of waiters) wake();
   }
 
   async setRate(rate: number): Promise<RateResult> {
@@ -1040,10 +1255,76 @@ export class BrowserMediaEngine implements MediaEngine {
       await renderer.ready;
       this.assRenderer = renderer;
       this.assTrackIndex = index;
+      if (this.settingValue("subtitle.forceStyle", false)) {
+        const failure = await this.applyAssStyleOverride(true);
+        if (failure) {
+          this.settings.set("subtitle.forceStyle", {
+            requested: true,
+            effective: false,
+            status: "unsupported",
+            layer: "session",
+            reason: failure
+          });
+        }
+      }
     } catch (error) {
       this.warnings.push(
         `ASS renderer unavailable: ${error instanceof Error ? error.message : String(error)}`
       );
+    }
+  }
+
+  /**
+   * Push the user's font preferences into libass as a selective style
+   * override. Returns a failure reason when the renderer rejects the call, so
+   * callers can report an honest setting status instead of a silent no-op.
+   */
+  private async applyAssStyleOverride(force: boolean): Promise<string | null> {
+    const renderer = this.assRenderer;
+    if (!renderer) return null;
+    try {
+      if (force) {
+        const family = this.settingValue("subtitle.fontFamily", "");
+        const sizePct = this.settingValue("subtitle.fontSizePct", 100);
+        await renderer.renderer.styleOverride({
+          Name: "Default",
+          FontName: family || "Liberation Sans",
+          FontSize: Math.round(48 * (sizePct / 100)),
+          // ASS colours are &HAABBGGRR with 0 alpha meaning opaque.
+          PrimaryColour: 0x00ffffff,
+          SecondaryColour: 0x000000ff,
+          OutlineColour: 0x00000000,
+          BackColour: 0x80000000,
+          Bold: 0,
+          Italic: 0,
+          Underline: 0,
+          StrikeOut: 0,
+          ScaleX: 100,
+          ScaleY: 100,
+          Spacing: 0,
+          Angle: 0,
+          BorderStyle: 1,
+          Outline: 2,
+          Shadow: 0,
+          Alignment: 2,
+          MarginL: 10,
+          MarginR: 10,
+          MarginV: 10,
+          Encoding: 1,
+          treat_fontname_as_pattern: 0,
+          Blur: 0,
+          Justify: 0
+        });
+      } else {
+        await renderer.renderer.disableStyleOverride();
+      }
+      return null;
+    } catch (error) {
+      const reason = `ASS style override failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      this.warnings.push(reason);
+      return reason;
     }
   }
 
@@ -1214,6 +1495,7 @@ export class BrowserMediaEngine implements MediaEngine {
     this.resizeObserver?.disconnect();
     await this.destroyAssRenderer();
     this.assCanvas.remove();
+    window.removeEventListener("pointerdown", this.resumeAudioOnGesture);
     this.renderer.destroy();
     this.overlay.destroy();
   }
@@ -1255,8 +1537,10 @@ export class BrowserMediaEngine implements MediaEngine {
           layer: scope,
           reason:
             requested === "high-quality"
-              ? "WebGL2 linear filtering with shader sharpening available"
-              : "WebGL2 filtering"
+              ? "Catmull-Rom bicubic resampling while enlarging; hardware bilinear when shrinking"
+              : requested === "nearest"
+                ? "nearest-neighbour sampling"
+                : "bilinear sampling"
         };
       case "audio.volume": {
         this.volume = requested as number;
@@ -1270,11 +1554,29 @@ export class BrowserMediaEngine implements MediaEngine {
       }
       case "subtitle.delayMs":
       case "subtitle.visible":
-      case "subtitle.fontSizePct":
         return applied();
-      case "subtitle.forceStyle":
-        if (requested === false) return applied();
-        return unsupported("ASS style override requires JASSUB and is P2");
+      case "subtitle.fontSizePct":
+      case "subtitle.fontFamily":
+        if (this.assRenderer && this.settingValue("subtitle.forceStyle", false)) {
+          // libass keeps its override style until replaced, so push the new
+          // font preferences immediately instead of waiting for the next track.
+          void this.applyAssStyleOverride(true);
+        }
+        return applied();
+      case "subtitle.forceStyle": {
+        const failure = await this.applyAssStyleOverride(requested as boolean);
+        if (failure) return unsupported(failure);
+        if (requested === true && !this.assRenderer) {
+          return {
+            requested,
+            effective: true,
+            status: "applied",
+            layer: scope,
+            reason: "applies to ASS/SSA subtitle tracks; bitmap subtitles keep their own styling"
+          };
+        }
+        return applied();
+      }
       case "playback.rate": {
         const result = await this.setRate(requested as number);
         return {
@@ -1300,6 +1602,10 @@ export class BrowserMediaEngine implements MediaEngine {
       }
       case "audio.balance": {
         this.audioOutput?.setBalance(requested as number);
+        return applied();
+      }
+      case "audio.channel": {
+        this.audioOutput?.setChannelMode(requested as "stereo" | "left" | "right");
         return applied();
       }
       case "audio.eq": {
@@ -1349,7 +1655,8 @@ export class BrowserMediaEngine implements MediaEngine {
   private applySubtitleSettings(): void {
     this.overlay.setOptions({
       visible: this.settingValue("subtitle.visible", true),
-      fontSizePct: this.settingValue("subtitle.fontSizePct", 100)
+      fontSizePct: this.settingValue("subtitle.fontSizePct", 100),
+      fontFamily: this.settingValue("subtitle.fontFamily", "")
     });
   }
 
@@ -1474,11 +1781,26 @@ export class BrowserMediaEngine implements MediaEngine {
   }
 
   private enqueueDecodedFrame(queued: QueuedVideoFrame): void {
+    const previousUs = this.lastDecodedTimestampUs;
+    this.lastDecodedTimestampUs = queued.timestampUs;
+    const measuredUs =
+      queued.durationUs > 0
+        ? queued.durationUs
+        : Number.isFinite(previousUs) && queued.timestampUs > previousUs
+          ? queued.timestampUs - previousUs
+          : 0;
+    if (measuredUs > 0 && measuredUs <= 500_000) {
+      this.frameDurationUs =
+        this.frameDurationUs > 0
+          ? this.frameDurationUs * 0.8 + measuredUs * 0.2
+          : measuredUs;
+    }
     const pushed = this.videoQueue.push(queued);
     for (const dropped of pushed.dropped) dropped.frame?.close();
     this.stats.videoQueueFrames = this.videoQueue.size;
     this.stats.videoQueueBytes = this.videoQueue.byteLength;
     this.stats.droppedVideoFrames = this.videoQueue.droppedFrames;
+    this.notifyFrameWaiters();
   }
 
   private processWasmOutput(
@@ -1619,6 +1941,11 @@ export class BrowserMediaEngine implements MediaEngine {
     const previousPosition = this.positionUs;
     const mediaTime = this.currentMediaTime(now);
     let due = this.videoQueue.takeDue(mediaTime);
+    // A seek preview is satisfied by the first frame drawn after it. Leaving
+    // the flag set made the following animation frame pull the *next* queued
+    // frame regardless of its timestamp, so a paused seek (and backward frame
+    // stepping) could end up showing a later frame than the playhead.
+    if (due) this.previewFramePending = false;
     if (!due && this.previewFramePending && this.phase !== "playing") {
       due = this.videoQueue.takeFirst();
       if (due) this.previewFramePending = false;
@@ -1630,17 +1957,19 @@ export class BrowserMediaEngine implements MediaEngine {
       } else if (due.image) {
         this.renderer.renderImage(due.image);
       }
+      this.displayedFrameUs = due.timestampUs;
       this.stats.renderedFrames += 1;
     }
     const clamped = Math.max(0, Math.min(this.durationUs, mediaTime));
     this.positionUs = clamped;
     this.updateSubtitleOverlay(mediaTime);
     if (mediaTime > this.seekTargetUs + 250_000) this.seekTargetUs = Number.NEGATIVE_INFINITY;
-    if (this.phase === "playing") {
-      const elapsedUs = Math.max(0, (now - this.lastStatsEmit) * 1_000_000);
-      if (elapsedUs > 0) {
-        this.audioBufferedUs = Math.max(0, this.audioBufferedUs - elapsedUs * this.rate);
-      }
+    // The AudioWorklet reports how many frames are still queued, so the buffer
+    // figure follows actual consumption. The old estimate subtracted the time
+    // since the last *stats* emit on every animation frame, which double-counted
+    // the same interval roughly thirty times.
+    if (this.audioOutput) {
+      this.audioBufferedUs = this.audioOutput.getBufferedUs();
     }
     this.stats.videoQueueFrames = this.videoQueue.size;
     this.stats.videoQueueBytes = this.videoQueue.byteLength;
@@ -1664,11 +1993,24 @@ export class BrowserMediaEngine implements MediaEngine {
   };
 
   private currentMediaTime(now: number): number {
+    const monotonic = this.clock.now(now);
     if (this.phase === "playing" && this.audioOutput?.isStarted) {
       const clock = this.audioOutput.getClock();
-      if (clock) return clock.mediaTimeUs;
+      if (clock) {
+        const delta = clock.mediaTimeUs - monotonic;
+        if (Math.abs(delta) > 250_000) {
+          // A suspended/resumed AudioContext or unusual channel layout can
+          // make the audio clock jump by seconds. Once it does, stop using it
+          // for video timing for the rest of this media session.
+          this.audioClockTrusted = false;
+        } else if (this.audioClockTrusted) {
+          // Normal 2-channel playback: keep audio as the A/V master so video
+          // stays in sync instead of drifting from a pure monotonic clock.
+          return clock.mediaTimeUs;
+        }
+      }
     }
-    return this.clock.now(now);
+    return monotonic;
   }
 
   private shouldEnd(): boolean {
@@ -1888,7 +2230,8 @@ export class BrowserMediaEngine implements MediaEngine {
   private syncCanvasSize(): void {
     const width = this.canvas.clientWidth || this.canvas.width || 640;
     const height = this.canvas.clientHeight || this.canvas.height || 360;
-    const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+    const rawDpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+    const dpr = Math.min(Math.max(rawDpr, 1), 1.5);
     this.renderer.resize(width, height, dpr);
   }
 

@@ -7,6 +7,7 @@ dedicated Chromium app window. No network service is exposed beyond 127.0.0.1.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.server
 import os
 import shutil
@@ -81,6 +82,7 @@ def find_browser() -> str | None:
     for name in (
         "google-chrome-stable",
         "google-chrome",
+        "chrome",
         "chromium",
         "chromium-browser",
         "microsoft-edge-stable",
@@ -89,6 +91,34 @@ def find_browser() -> str | None:
         path = shutil.which(name)
         if path:
             return path
+
+    # Common package-manager and Chrome-for-Testing locations that are not on
+    # PATH for desktop launchers.
+    for path in (
+        Path("/opt/google/chrome/chrome"),
+        Path("/opt/microsoft/msedge/msedge"),
+        Path("/usr/lib/chromium/chromium"),
+        Path("/usr/lib/chromium-browser/chromium-browser"),
+        Path("/snap/bin/chromium"),
+        SCRIPT_DIR / "browser" / "chrome",
+        SCRIPT_DIR / "browser" / "chromium",
+    ):
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+
+    # A local Playwright/Chrome-for-Testing cache is a valid app-window host.
+    playwright_roots = [Path.home() / ".cache" / "ms-playwright"]
+    configured_root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if configured_root:
+        playwright_roots.append(Path(configured_root))
+    for root in playwright_roots:
+        if not root.is_dir():
+            continue
+        for pattern in ("chromium-*/chrome-linux*/chrome", "chromium-*/chrome-linux*/chrome-wrapper"):
+            candidates = sorted(root.glob(pattern), reverse=True)
+            for candidate in candidates:
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
     return None
 
 
@@ -129,10 +159,19 @@ def main() -> int:
     browser = find_browser()
     if not browser:
         server.server_close()
-        show_error("Chrome/Chromium/Microsoft Edge was not found. Install one of them and try again.")
+        show_error(
+            "WASM Player 未找到可用的浏览器。\n\n"
+            "请安装 Chromium、Google Chrome 或 Microsoft Edge，或设置 "
+            "WASM_PLAYER_BROWSER=/path/to/chrome 后重试。\n\n"
+            "Deepin/UOS 可执行: sudo apt install chromium"
+        )
         return 3
 
-    profile = STATE_DIR / "chrome-profile"
+    # Keep browser profiles separate per executable. Chrome for Testing and a
+    # distro Chromium may refuse to open a profile written by a different major
+    # version, which looks like an immediate exit with no window.
+    profile_key = hashlib.sha256(str(Path(browser).resolve()).encode()).hexdigest()[:8]
+    profile = STATE_DIR / f"chrome-profile-{profile_key}"
     profile.mkdir(parents=True, exist_ok=True)
     thread = threading.Thread(target=serve_forever, args=(server,), daemon=True)
     thread.start()
@@ -150,8 +189,15 @@ def main() -> int:
         "--class=WasmPlayer",
         "--window-size=1280,860",
     ]
+    environment = os.environ.copy()
+    bundled_lib = Path(browser).resolve().parent / "lib"
+    if bundled_lib.is_dir():
+        existing_path = environment.get("LD_LIBRARY_PATH")
+        environment["LD_LIBRARY_PATH"] = (
+            f"{bundled_lib}:{existing_path}" if existing_path else str(bundled_lib)
+        )
     try:
-        subprocess.run(command, check=False)
+        subprocess.run(command, check=False, env=environment)
     except OSError as error:
         show_error(f"{APP_NAME} could not launch the browser: {error}")
         return 4

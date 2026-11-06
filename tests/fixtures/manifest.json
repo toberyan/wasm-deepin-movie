@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generatedBy": "ffmpeg 6.1.5-0deepin4 (system GPL build; used only to create test fixtures, not shipped)",
-  "generatedAt": "2026-11-03T05:58:27.227Z",
+  "generatedAt": "2026-11-06T02:08:09.507Z",
   "note": "Synthetic lavfi sources. H.264/HEVC/AAC/AC-3 are test assets; review distribution/licensing before publishing binaries.",
   "fixtures": [
     {
@@ -254,6 +254,26 @@
         "video": "webcodecs",
         "audio": "webcodecs"
       },
+      "license": "Generated locally for tests; not distributed as a product asset."
+    },
+    {
+      "id": "sample-vfr-gap.mp4",
+      "path": "generated/sample-vfr-gap.mp4",
+      "sha256": "5df3227141f563ecc4d2abbce4789eda7ce28c3b255895f9e8511ae7f7f4f132",
+      "bytes": 17099,
+      "container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "durationSec": 1.233333,
+      "video": {
+        "codec": "h264",
+        "profile": "High",
+        "width": 320,
+        "height": 180,
+        "pixelFormat": "yuv420p",
+        "bitDepth": 8
+      },
+      "audio": null,
+      "subtitle": null,
+      "expectedDecodePath": null,
       "license": "Generated locally for tests; not distributed as a product asset."
     },
     {

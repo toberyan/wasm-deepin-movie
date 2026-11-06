@@ -144,6 +144,7 @@ export const playerSnapshotSchema = z
     media: mediaInfoSchema.nullable(),
     tracks: z.array(trackInfoSchema),
     selected: selectedTracksSchema,
+    playlistIndex: z.number().int().nonnegative().nullable(),
     positionUs: z.number(),
     durationUs: z.number().nonnegative(),
     rate: z.number().positive(),

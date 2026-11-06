@@ -28,7 +28,15 @@ export class VideoFrameQueue<T extends TimedFrame> {
   private bytes = 0;
   private droppedCount = 0;
 
-  constructor(private readonly limits: FrameQueueLimits) {
+  /**
+   * @param release Called for frames the queue discards on its own (presentation
+   * time passed them). Frames dropped by `push` and returned by `clear` are
+   * handed back to the caller instead, so ownership never moves silently.
+   */
+  constructor(
+    private readonly limits: FrameQueueLimits,
+    private readonly release?: (frame: T) => void
+  ) {
     if (limits.maxFrames <= 0) throw new RangeError("maxFrames must be positive");
     if (limits.maxBytes <= 0) throw new RangeError("maxBytes must be positive");
   }
@@ -74,9 +82,9 @@ export class VideoFrameQueue<T extends TimedFrame> {
   }
 
   /**
-   * Return the newest frame whose presentation time has arrived, dropping all
-   * older frames. Returns undefined when the queue is empty or the head is in
-   * the future.
+   * Return the newest frame whose presentation time has arrived, releasing all
+   * older frames through the configured release callback. Returns undefined
+   * when the queue is empty or the head is in the future.
    */
   takeDue(timeUs: number): T | undefined {
     let dueIndex = -1;
@@ -93,6 +101,9 @@ export class VideoFrameQueue<T extends TimedFrame> {
     for (const frame of expired) {
       this.bytes -= frame.byteLength;
       this.droppedCount += 1;
+      // Expired frames have no consumer: release their GPU resources now
+      // instead of waiting for GC, which never closes a VideoFrame.
+      this.release?.(frame);
     }
     return due;
   }

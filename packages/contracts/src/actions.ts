@@ -88,6 +88,7 @@ export const ACTION_IDS = {
   presetsApply: "presets.apply",
   presetsDelete: "presets.delete",
   playlistAdd: "playlist.add",
+  playlistMove: "playlist.move",
   playlistRemove: "playlist.remove",
   playlistClear: "playlist.clear",
   playlistList: "playlist.list",
@@ -109,7 +110,13 @@ export const mediaSourceSchema = z
     sourceId: z.string().min(1).optional(),
     name: z.string().optional(),
     headers: z.record(z.string(), z.string()).optional(),
-    sizeBytes: z.number().nonnegative().optional()
+    sizeBytes: z.number().nonnegative().optional(),
+    /**
+     * Stable identity for local files (see `fileIdentity`). It survives a
+     * restart, so a re-opened file can be matched back to its playlist entry
+     * instead of matching by file name alone.
+     */
+    identity: z.string().min(1).max(4096).optional()
   })
   .strict()
   .superRefine((source, ctx) => {
@@ -188,7 +195,7 @@ export const seekOutputSchema = z
 export const stepInputSchema = z
   .object({
     frames: z.number().int().min(1).max(600).default(1),
-    direction: z.literal("forward").default("forward")
+    direction: z.enum(["forward", "backward"]).default("forward")
   })
   .strict();
 
@@ -205,7 +212,7 @@ export const setVolumeInputSchema = z
   .strict();
 
 export const loopSetInputSchema = z
-  .object({ mode: z.enum(["off", "media", "playlist"]) })
+  .object({ mode: z.enum(["off", "media", "playlist", "order", "shuffle"]) })
   .strict();
 
 export const tracksSelectInputSchema = z
@@ -410,6 +417,13 @@ export const playlistAddInputSchema = z
   .object({ sources: z.array(mediaSourceSchema).min(1) })
   .strict();
 
+export const playlistMoveInputSchema = z
+  .object({
+    from: z.number().int().nonnegative(),
+    to: z.number().int().nonnegative()
+  })
+  .strict();
+
 export const playlistRemoveInputSchema = z.object({ index: z.number().int().nonnegative() }).strict();
 
 export const playlistPlayInputSchema = z.object({ index: z.number().int().nonnegative() }).strict();
@@ -423,6 +437,9 @@ export const playlistListOutputSchema = z
           name: z.string(),
           sourceId: z.string().optional(),
           url: z.string().optional(),
+          kind: z.enum(["file", "url", "sourceId"]).optional(),
+          identity: z.string().optional(),
+          available: z.boolean().optional(),
           durationUs: z.number().nonnegative().optional()
         })
         .strict()

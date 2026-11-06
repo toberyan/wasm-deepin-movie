@@ -6,6 +6,9 @@ export interface CompanionArgs {
   allowRoots: string[];
   webRoot: string;
   token?: string;
+  tokenFile?: string;
+  allowDomains: string[];
+  allowPrivateNetwork: boolean;
   stdio: boolean;
 }
 
@@ -15,6 +18,8 @@ export function parseArgs(argv: string[]): CompanionArgs {
     port: 4178,
     allowRoots: [],
     webRoot: resolve("apps/web/dist"),
+    allowDomains: [],
+    allowPrivateNetwork: false,
     stdio: false
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -44,6 +49,15 @@ export function parseArgs(argv: string[]): CompanionArgs {
       case "--token":
         args.token = next();
         break;
+      case "--token-file":
+        args.tokenFile = resolve(next());
+        break;
+      case "--allow-domain":
+        args.allowDomains.push(next().toLowerCase());
+        break;
+      case "--allow-private-network":
+        args.allowPrivateNetwork = true;
+        break;
       case "--stdio":
         args.stdio = true;
         break;
@@ -72,7 +86,10 @@ function printHelp(): void {
       "  --port <number>         default 4178; 0 picks a free port",
       "  --allow-root <dir>      allow read-only media under this directory (repeatable)",
       "  --web-root <dir>        built web app directory (default apps/web/dist)",
-      "  --token <hex>           control token (default random per process)"
+      "  --token <hex>           control token (default random per process)",
+      "  --token-file <path>     read the control token from a file",
+      "  --allow-domain <host>   allow remote media from this host/suffix (repeatable)",
+      "  --allow-private-network allow loopback/private remote targets (tests only)"
     ].join("\n")
   );
 }

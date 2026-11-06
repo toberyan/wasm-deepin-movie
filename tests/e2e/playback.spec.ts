@@ -1,13 +1,15 @@
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 
 interface PlayerState {
   phase: string;
   media: {
     name: string;
+    sourceId?: string;
     durationUs: number;
     decodePaths: Record<string, string>;
     sourceKind?: string;
@@ -19,10 +21,13 @@ interface PlayerState {
   positionUs: number;
   durationUs: number;
   rate: number;
+  volume: number;
+  playlistIndex: number | null;
   stats: {
     decodedVideoFrames: number;
     renderedFrames: number;
     decodedAudioFrames: number;
+    audioBufferMs: number;
     droppedVideoFrames: number;
     videoQueueFrames: number;
     videoQueueBytes: number;
@@ -113,6 +118,12 @@ async function playAndPause(page: Page): Promise<void> {
   });
   const playing = await state(page);
   expect(playing.stats.decodedAudioFrames).toBeGreaterThan(0);
+  // The buffer figure comes from the AudioWorklet ring. An estimate that
+  // subtracts the same interval on every animation frame collapses to zero
+  // within one stats tick, so this would fail with the old accounting.
+  await expect
+    .poll(async () => (await state(page)).stats.audioBufferMs)
+    .toBeGreaterThan(100);
   await page.locator(".play-button").click();
   await page.waitForFunction(() => {
     const snapshot = (window as unknown as PlayerWindow).__player?.getState();
@@ -130,6 +141,563 @@ async function waitForMedia(page: Page): Promise<void> {
     );
   });
 }
+
+async function waitForCanvasToFit(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    const frame = document.querySelector(".video-frame")?.getBoundingClientRect();
+    const canvas = document.querySelector("canvas.video-canvas") as HTMLCanvasElement | null;
+    if (!frame || !canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(Math.max(devicePixelRatio, 1), 1.5);
+    return (
+      Math.abs(canvas.width - frame.width * dpr) <= 1 &&
+      Math.abs(canvas.height - frame.height * dpr) <= 1 &&
+      Math.abs(rect.width - frame.width) <= 1 &&
+      Math.abs(rect.height - frame.height) <= 1
+    );
+  });
+}
+
+async function canvasSignature(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector("canvas.video-canvas") as HTMLCanvasElement | null;
+    if (!canvas) return 0;
+    const copy = document.createElement("canvas");
+    copy.width = canvas.width;
+    copy.height = canvas.height;
+    const context = copy.getContext("2d");
+    if (!context) return 0;
+    context.drawImage(canvas, 0, 0);
+    const data = context.getImageData(0, 0, copy.width, copy.height).data;
+    let hash = 2166136261;
+    for (let index = 0; index < data.length; index += 16) {
+      hash ^= data[index] ?? 0;
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return hash;
+  });
+}
+
+async function canvasRedSum(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector("canvas.video-canvas") as HTMLCanvasElement | null;
+    if (!canvas) return 0;
+    const copy = document.createElement("canvas");
+    copy.width = canvas.width;
+    copy.height = canvas.height;
+    const context = copy.getContext("2d");
+    if (!context) return 0;
+    context.drawImage(canvas, 0, 0);
+    const data = context.getImageData(0, 0, Math.min(200, copy.width), Math.min(120, copy.height)).data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) sum += data[i] ?? 0;
+    return sum;
+  });
+}
+
+test("keeps the paused frame visible when the settings drawer resizes the canvas", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  await invoke(page, "playback.seek", { positionUs: 1_000_000 });
+  await page.waitForFunction(() => {
+    const snapshot = (window as unknown as PlayerWindow).__player?.getState();
+    return Boolean(snapshot && snapshot.stats.renderedFrames > 0);
+  });
+  await page.waitForTimeout(200);
+  const before = await canvasRedSum(page);
+  const beforeWidth = await page.evaluate(
+    () => (document.querySelector("canvas.video-canvas") as HTMLCanvasElement).width
+  );
+  expect(before).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.waitForFunction(
+    (width) =>
+      (document.querySelector("canvas.video-canvas") as HTMLCanvasElement).width < width,
+    beforeWidth
+  );
+  await page.waitForTimeout(200);
+  expect(await canvasRedSum(page)).toBeGreaterThan(0);
+});
+
+test("keeps the video area when fullscreen chrome is hidden", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const before = await page.evaluate(
+    () => document.querySelector(".stage")?.getBoundingClientRect().height ?? 0
+  );
+  await page.evaluate(() => document.querySelector(".app-shell")?.classList.add("chrome-hidden"));
+  const after = await page.evaluate(
+    () => document.querySelector(".stage")?.getBoundingClientRect().height ?? 0
+  );
+  expect(after).toBeGreaterThan(0);
+  expect(after).toBeGreaterThanOrEqual(before);
+  await page.evaluate(() =>
+    document.querySelector(".app-shell")?.classList.remove("chrome-hidden")
+  );
+});
+
+test("opens a folder, plays adjacent items and reorders the queue", async ({ page }) => {
+  const folder = mkdtempSync(join(tmpdir(), "wasm-player-folder-"));
+  try {
+    copyFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"), join(folder, "01.mp4"));
+    copyFileSync(resolve("tests/fixtures/generated/sample-h264-cropped.mp4"), join(folder, "02.mp4"));
+    await page.goto("/");
+    await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+    await page.locator('input[type="file"]').nth(2).setInputFiles(folder);
+    await page.waitForFunction(
+      () => (window as unknown as PlayerWindow).__player?.getState().media?.name === "01.mp4"
+    );
+
+    await page.getByRole("button", { name: "下一个", exact: true }).click();
+    await page.waitForFunction(
+      () => (window as unknown as PlayerWindow).__player?.getState().media?.name === "02.mp4"
+    );
+    await page.getByRole("button", { name: "上一个", exact: true }).click();
+    await page.waitForFunction(
+      () => (window as unknown as PlayerWindow).__player?.getState().media?.name === "01.mp4"
+    );
+
+    await page.getByRole("button", { name: "媒体库", exact: true }).click();
+    const names = page.locator(".library-item .library-main span");
+    await expect(names).toHaveText(["01.mp4", "02.mp4"]);
+    await page.locator(".library-item").nth(1).dragTo(page.locator(".library-item").nth(0));
+    await expect(names).toHaveText(["02.mp4", "01.mp4"]);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("shows film info and applies audio and subtitle settings", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+
+  await page.getByRole("button", { name: "更多", exact: true }).click();
+  await page.getByRole("menuitem", { name: "影片信息", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "影片信息" });
+  await expect(dialog).toContainText("mp4");
+  await expect(dialog).toContainText("video");
+  await page.getByRole("button", { name: "关闭影片信息" }).click();
+
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("tab", { name: "声音", exact: true }).click();
+  await page.getByLabel("声道").selectOption("left");
+  await page.waitForFunction(
+    () =>
+      (window as unknown as PlayerWindow).__player?.getState().settings["audio.channel"]
+        ?.effective === "left"
+  );
+
+  await page.getByRole("tab", { name: "字幕", exact: true }).click();
+  await page.getByLabel("字体").selectOption("serif");
+  await page.getByLabel("外挂字幕编码").selectOption("gb18030");
+  expect(await page.evaluate(() => localStorage.getItem("wasm-player-subtitle-encoding"))).toBe(
+    "gb18030"
+  );
+  await page.waitForFunction(
+    () =>
+      (window as unknown as PlayerWindow).__player?.getState().settings["subtitle.fontFamily"]
+        ?.effective === "serif"
+  );
+});
+
+test("adjusts speed and steps frames from the keyboard", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  await page.locator(".video-frame").click({ position: { x: 120, y: 120 } });
+
+  await page.keyboard.press("Control+ArrowRight");
+  await page.keyboard.press("Control+ArrowRight");
+  await expect.poll(async () => (await state(page)).rate).toBe(1.2);
+  await page.keyboard.press("r");
+  await expect.poll(async () => (await state(page)).rate).toBe(1);
+
+  const before = (await state(page)).positionUs;
+  await page.keyboard.press(".");
+  await expect
+    .poll(async () => (await state(page)).positionUs)
+    .toBeGreaterThan(before);
+});
+
+test("steps by decoded frame timestamps in both directions", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  // 24 fps fixture: one frame is 41.7 ms, so a fixed 30 fps step (33.3 ms)
+  // would be visibly wrong here.
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-cropped.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-cropped.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  await invoke(page, "playback.pause");
+  await invoke(page, "playback.seek", { positionUs: 500_000 });
+  await expect
+    .poll(async () => (await state(page)).positionUs)
+    .toBe(500_000);
+
+  await invoke(page, "playback.step", { frames: 1, direction: "forward" });
+  const forward = (await state(page)).positionUs;
+  const delta = forward - 500_000;
+  expect(delta).toBeGreaterThan(38_000);
+  expect(delta).toBeLessThan(45_000);
+
+  await invoke(page, "playback.step", { frames: 1, direction: "backward" });
+  const backward = (await state(page)).positionUs;
+  expect(Math.abs(backward - 500_000)).toBeLessThan(2_000);
+  expect(backward).toBeLessThan(forward);
+});
+
+test("steps backward across a variable-frame-rate gap", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  // Frames at 0 s, 0.2 s and 1.2 s: the previous frame is one second behind the
+  // playhead, so a 30 fps estimate cannot find it.
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-vfr-gap.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-vfr-gap.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  await invoke(page, "playback.pause");
+  await invoke(page, "playback.seek", { positionUs: 1_200_000 });
+  await expect.poll(async () => (await state(page)).positionUs).toBe(1_200_000);
+  await page.waitForTimeout(300);
+  const before = await canvasSignature(page);
+
+  await invoke(page, "playback.step", { frames: 1, direction: "backward" });
+  await expect.poll(async () => (await state(page)).positionUs).toBe(200_000);
+  await page.waitForTimeout(250);
+  // The playhead and the picture must both move; stopping on the same frame
+  // while reporting success was the bug.
+  expect(await canvasSignature(page)).not.toBe(before);
+
+  await invoke(page, "playback.step", { frames: 1, direction: "forward" });
+  await expect.poll(async () => (await state(page)).positionUs).toBe(1_200_000);
+
+  // Two frames back must land on the frame at 0 s, not stop at 0.2 s.
+  await invoke(page, "playback.step", { frames: 2, direction: "backward" });
+  await expect.poll(async () => (await state(page)).positionUs).toBe(0);
+  await page.waitForTimeout(250);
+  expect(await canvasSignature(page)).not.toBe(before);
+});
+
+test("navigates same-named files from different folders independently", async ({ page }) => {
+  const root = mkdtempSync(join(tmpdir(), "wasm-player-same-name-"));
+  try {
+    for (const directory of ["a", "b", "c"]) {
+      mkdirSync(join(root, directory));
+      copyFileSync(
+        resolve("tests/fixtures/generated/sample-h264-aac.mp4"),
+        join(root, directory, "episode.mp4")
+      );
+    }
+    await page.goto("/");
+    await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+    await page.locator('input[type="file"]').nth(2).setInputFiles(root);
+    await waitForMedia(page);
+
+    const first = (await state(page)).media?.sourceId;
+    expect(first).toBeTruthy();
+    await page.getByRole("button", { name: "下一个", exact: true }).click();
+    await expect
+      .poll(async () => (await state(page)).media?.sourceId)
+      .not.toBe(first);
+    const second = (await state(page)).media?.sourceId;
+    await page.getByRole("button", { name: "下一个", exact: true }).click();
+    await expect
+      .poll(async () => (await state(page)).media?.sourceId)
+      .not.toBe(second);
+    const third = (await state(page)).media?.sourceId;
+    // Three distinct files, three distinct media identities.
+    expect(new Set([first, second, third]).size).toBe(3);
+
+    await page.getByRole("button", { name: "媒体库", exact: true }).click();
+    await expect(page.locator(".library-item .library-main span")).toHaveText([
+      "episode.mp4",
+      "episode.mp4",
+      "episode.mp4"
+    ]);
+    // Only the entry that is actually playing is highlighted.
+    await expect(page.locator(".library-main.active")).toHaveCount(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("manual navigation follows the auto-advanced playlist index", async ({ page }) => {
+  const root = mkdtempSync(join(tmpdir(), "wasm-player-advance-"));
+  try {
+    for (const directory of ["a", "b", "c"]) {
+      mkdirSync(join(root, directory));
+      copyFileSync(
+        resolve("tests/fixtures/generated/sample-h264-aac.mp4"),
+        join(root, directory, "episode.mp4")
+      );
+    }
+    await page.goto("/");
+    await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+    await page.locator('input[type="file"]').nth(2).setInputFiles(root);
+    await waitForMedia(page);
+    // Autoplay can be deferred; `playback.play` is idempotent, unlike the
+    // play/pause button which would toggle a race-winning autoplay to paused.
+    await invoke(page, "playback.play");
+    await page.waitForFunction(
+      () => (window as unknown as PlayerWindow).__player?.getState().phase === "playing"
+    );
+    await invoke(page, "loop.set", { mode: "order" });
+    expect((await state(page)).playlistIndex).toBe(0);
+
+    // Let the first episode end; the controller advances to the second one.
+    const duration = (await state(page)).durationUs;
+    await invoke(page, "playback.seek", { positionUs: Math.max(0, duration - 50_000) });
+    await expect.poll(async () => (await state(page)).playlistIndex).toBe(1);
+    const secondId = (await state(page)).media?.sourceId;
+
+    // "Next" must continue from the auto-advanced entry, i.e. open the third.
+    await page.getByRole("button", { name: "下一个", exact: true }).click();
+    await expect.poll(async () => (await state(page)).playlistIndex).toBe(2);
+    expect((await state(page)).media?.sourceId).not.toBe(secondId);
+
+    await page.getByRole("button", { name: "媒体库", exact: true }).click();
+    await expect(page.locator(".library-main.active")).toHaveCount(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("keeps history and bookmarks per file when file names collide", async ({ page }) => {
+  const root = mkdtempSync(join(tmpdir(), "wasm-player-bookmarks-"));
+  try {
+    for (const directory of ["a", "c"]) {
+      mkdirSync(join(root, directory));
+      copyFileSync(
+        resolve("tests/fixtures/generated/sample-h264-aac.mp4"),
+        join(root, directory, "episode.mp4")
+      );
+    }
+    await page.goto("/");
+    await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+    await page.locator('input[type="file"]').nth(2).setInputFiles(root);
+    await waitForMedia(page);
+
+    const first = (await state(page)).media;
+    await invoke(page, "bookmarks.add", { name: "A-only", positionUs: 1_000 });
+    const firstBookmarks = await invoke(page, "bookmarks.list");
+    expect((firstBookmarks.output as { items: unknown[] }).items).toHaveLength(1);
+
+    await page.getByRole("button", { name: "下一个", exact: true }).click();
+    await expect
+      .poll(async () => (await state(page)).media?.sourceId)
+      .not.toBe(first?.sourceId);
+
+    // bookmarks.list requires an open media, so wait until the second file is
+    // fully opened instead of racing its open request.
+    await expect
+      .poll(async () => (await invoke(page, "bookmarks.list")).status)
+      .toBe("applied");
+    const secondBookmarks = await invoke(page, "bookmarks.list");
+    expect((secondBookmarks.output as { items: unknown[] }).items).toHaveLength(0);
+
+    const secondId = (await state(page)).media?.sourceId;
+    await expect
+      .poll(async () => {
+        const history = await invoke(page, "history.list", { limit: 50 });
+        return (history.output as { items: { id: string }[] }).items.map((item) => item.id);
+      })
+      .toEqual(expect.arrayContaining([first?.sourceId, secondId]));
+    const history = await invoke(page, "history.list", { limit: 50 });
+    const ids = (history.output as { items: { id: string }[] }).items.map((item) => item.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("restores local playlist entries after reload and relinks them by identity", async ({ page }) => {
+  const base64 = readFileSync(
+    resolve("tests/fixtures/generated/sample-h264-aac.mp4")
+  ).toString("base64");
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+
+  const added = await page.evaluate(async (encoded) => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+    const file = new File([bytes], "persisted.mp4", {
+      type: "video/mp4",
+      lastModified: 1_700_000_000_000
+    });
+    return player.invoke({
+      requestId: `e2e-add-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "playlist.add",
+      params: { sources: [{ kind: "file", file, name: file.name }] }
+    });
+  }, base64);
+  expect(added.status).toBe("applied");
+  // The controller persists with a 250 ms debounce.
+  await page.waitForTimeout(800);
+
+  await page.reload();
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const listed = await invoke(page, "playlist.list");
+  const items = (listed.output as { items: Record<string, unknown>[] }).items;
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({
+    name: "persisted.mp4",
+    kind: "file",
+    available: false
+  });
+
+  const blocked = await invoke(page, "playlist.play", { index: 0 });
+  expect(blocked.status).toBe("rejected");
+  expect(blocked.error?.code).toBe("SOURCE_NOT_AUTHORIZED");
+
+  const relinked = await page.evaluate(async (encoded) => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+    const file = new File([bytes], "persisted.mp4", {
+      type: "video/mp4",
+      lastModified: 1_700_000_000_000
+    });
+    return player.invoke({
+      requestId: `e2e-relink-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "media.open",
+      params: { source: { kind: "file", file, name: file.name } }
+    });
+  }, base64);
+  expect(relinked.status).toBe("applied");
+  const after = await invoke(page, "playlist.list");
+  const afterItems = (after.output as { items: Record<string, unknown>[] }).items;
+  expect(afterItems).toHaveLength(1);
+  expect(afterItems[0]?.available).toBe(true);
+});
+
+test("keeps the canvas inside the playback area after shrinking and restoring the window", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  await waitForCanvasToFit(page);
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await waitForCanvasToFit(page);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await waitForCanvasToFit(page);
+
+  const metrics = await page.evaluate(() => {
+    const frame = document.querySelector(".video-frame")?.getBoundingClientRect();
+    const canvas = document.querySelector("canvas.video-canvas") as HTMLCanvasElement;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      frame: frame ? { width: frame.width, height: frame.height } : null,
+      rect: { width: rect.width, height: rect.height },
+      bitmap: { width: canvas.width, height: canvas.height }
+    };
+  });
+  expect(metrics.frame).not.toBeNull();
+  expect(metrics.rect.width).toBeCloseTo(metrics.frame?.width ?? 0, 0);
+  expect(metrics.rect.height).toBeCloseTo(metrics.frame?.height ?? 0, 0);
+  expect(Math.abs(metrics.bitmap.width - (metrics.frame?.width ?? 0))).toBeLessThanOrEqual(1);
+  expect(Math.abs(metrics.bitmap.height - (metrics.frame?.height ?? 0))).toBeLessThanOrEqual(1);
+});
+
+test("keeps the canvas inside the playback area when chrome returns from fullscreen", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+  await waitForCanvasToFit(page);
+
+  await page.evaluate(() => document.querySelector(".app-shell")?.classList.add("chrome-hidden"));
+  await page.waitForTimeout(200);
+  await page.evaluate(() =>
+    document.querySelector(".app-shell")?.classList.remove("chrome-hidden")
+  );
+  await waitForCanvasToFit(page);
+
+  const metrics = await page.evaluate(() => {
+    const frame = document.querySelector(".video-frame")?.getBoundingClientRect();
+    const canvas = document.querySelector("canvas.video-canvas") as HTMLCanvasElement;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(Math.max(devicePixelRatio, 1), 1.5);
+    return {
+      frameBottom: frame ? frame.bottom : 0,
+      canvasBottom: rect.bottom,
+      bitmapHeight: canvas.height,
+      expectedBitmapHeight: (frame?.height ?? 0) * dpr
+    };
+  });
+  expect(metrics.canvasBottom).toBeLessThanOrEqual(metrics.frameBottom + 1);
+  expect(Math.abs(metrics.bitmapHeight - metrics.expectedBitmapHeight)).toBeLessThanOrEqual(1);
+});
+
+test("focused controls keep their native keyboard behavior", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
+  const video = readFileSync(resolve("tests/fixtures/generated/sample-h264-aac.mp4"));
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "sample-h264-aac.mp4",
+    mimeType: "video/mp4",
+    buffer: video
+  });
+  await waitForMedia(page);
+
+  await page.getByRole("button", { name: "更多", exact: true }).focus();
+  await page.keyboard.press("Space");
+  await expect(page.locator(".more-menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "播放速度", exact: true }).focus();
+  const before = await state(page);
+  await page.keyboard.press("ArrowDown");
+  await page.waitForTimeout(100);
+  const after = await state(page);
+  expect(after.rate).toBe(before.rate);
+  expect(after.volume).toBe(before.volume);
+
+  await page.locator(".video-frame").click({ position: { x: 120, y: 120 } });
+  await page.keyboard.press("ArrowDown");
+  await expect.poll(async () => (await state(page)).volume).toBeLessThan(before.volume);
+});
 
 async function invoke(page: Page, action: string, params: Record<string, unknown> = {}) {
   return page.evaluate(
@@ -203,6 +771,12 @@ test("opens MP4, renders the first frame, plays audio and pauses", async ({ page
   });
   const playing = await state(page);
   expect(playing.stats.decodedAudioFrames).toBeGreaterThan(0);
+  // The buffer figure comes from the AudioWorklet ring. An estimate that
+  // subtracts the same interval on every animation frame collapses to zero
+  // within one stats tick, so this would fail with the old accounting.
+  await expect
+    .poll(async () => (await state(page)).stats.audioBufferMs)
+    .toBeGreaterThan(100);
 
   await page.locator(".play-button").click();
   await page.waitForFunction(() => {
@@ -315,9 +889,16 @@ test("seeks, applies picture settings, loads subtitles and captures a screenshot
   });
 
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "截图" }).first().click();
+  await page.getByRole("button", { name: "更多" }).click();
+  await page.getByRole("menuitem", { name: "截图" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/screenshot-.*\.png$/);
+
+  const boardPromise = page.waitForEvent("download", { timeout: 30_000 });
+  await page.getByRole("button", { name: "更多" }).click();
+  await page.getByRole("menuitem", { name: "剧情连拍（15 帧）", exact: true }).click();
+  const board = await boardPromise;
+  expect(board.suggestedFilename()).toMatch(/storyboard-.*\.png$/);
 });
 
 test("renders embedded SubRip subtitles from Matroska", async ({ page }) => {
@@ -405,10 +986,23 @@ test("renders ASS subtitles through JASSUB/libass", async ({ page }) => {
     return getComputedStyle(canvas).display !== "none" && canvas.width > 0 && canvas.height > 0;
   });
 
+  const forced = await invoke(page, "settings.apply", {
+    scope: "session",
+    patch: { subtitle: { forceStyle: true } }
+  });
+  expect(forced.status).toBe("applied");
+  const forcedValue = (
+    forced as {
+      effective?: Record<string, { status: string; reason?: string }>;
+    }
+  ).effective?.["subtitle.forceStyle"];
+  expect(forcedValue?.status).toBe("applied");
+
   const diagnostics = await invoke(page, "diagnostics.get");
   expect(diagnostics.status).toBe("applied");
   const output = diagnostics.output as { warnings: string[] };
   expect(output.warnings.some((warning) => warning.includes("ASS renderer unavailable"))).toBe(false);
+  expect(output.warnings.some((warning) => warning.includes("style override failed"))).toBe(false);
 
   await page.screenshot({ path: "test-results/ass-subtitles.png", fullPage: true });
 });
@@ -701,7 +1295,12 @@ test("library UI manages history, playlist, bookmarks and theme", async ({ page 
     const player = (window as unknown as PlayerWindow).__player;
     if (!player) throw new Error("player is not ready");
     const bytes = await (await fetch("/fixtures/sample-h264-aac.mp4")).arrayBuffer();
-    const file = new File([bytes], "sample-h264-aac.mp4", { type: "video/mp4" });
+    // A fixed modification time keeps the file identity stable across the
+    // separate File objects this test creates.
+    const file = new File([bytes], "sample-h264-aac.mp4", {
+      type: "video/mp4",
+      lastModified: 1_700_000_000_000
+    });
     return player.invoke({
       requestId: `library-open-${Date.now()}`,
       sessionId: player.sessionId,
@@ -711,13 +1310,48 @@ test("library UI manages history, playlist, bookmarks and theme", async ({ page 
   });
   expect(opened.status).toBe("applied");
   await waitForMedia(page);
+  await invoke(page, "playlist.add", {
+    sources: [
+      {
+        kind: "url",
+        url: "https://example.invalid/sample-h264-aac.mp4",
+        name: "sample-h264-aac.mp4"
+      }
+    ]
+  });
+  await page.evaluate(async () => {
+    const player = (window as unknown as PlayerWindow).__player;
+    if (!player) throw new Error("player is not ready");
+    const bytes = await (await fetch("/fixtures/sample-h264-aac.mp4")).arrayBuffer();
+    const file = new File([bytes], "sample-h264-aac.mp4", {
+      type: "video/mp4",
+      lastModified: 1_700_000_000_000
+    });
+    await player.invoke({
+      requestId: `library-playlist-${Date.now()}`,
+      sessionId: player.sessionId,
+      action: "playlist.add",
+      params: { sources: [{ kind: "file", file, name: file.name }] }
+    });
+  });
 
-  await page.getByRole("button", { name: "列表" }).click();
+  await page.getByRole("button", { name: "媒体库" }).click();
   await page.getByRole("tab", { name: "书签" }).click();
   await page.getByRole("button", { name: "在当前位置添加书签" }).click();
   await expect(page.locator(".library-item").filter({ hasText: "0:00" }).first()).toBeVisible();
 
   await page.getByRole("tab", { name: "播放列表" }).click();
+  // The file entry is highlighted through its identity; the URL entry with the
+  // same name must not claim to be the playing item.
+  await expect(page.locator(".library-main.active")).toHaveCount(1);
+  await expect(
+    page.locator(".library-main.active").filter({ hasText: "sample-h264-aac.mp4" })
+  ).toBeVisible();
+  await expect(
+    page.locator(".library-item").filter({
+      has: page.locator("small", { hasText: "https://example.invalid" })
+    })
+  ).not.toHaveClass(/active/);
   await page.getByPlaceholder("输入视频 URL").fill("https://example.com/movie.mp4");
   await page.getByRole("button", { name: "添加" }).click();
   await expect(page.locator(".library-item").filter({ hasText: "movie.mp4" })).toBeVisible();
@@ -729,7 +1363,7 @@ test("library UI manages history, playlist, bookmarks and theme", async ({ page 
   await page.reload();
   await page.waitForFunction(() => Boolean((window as unknown as PlayerWindow).__player));
   expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe("light");
-  await page.getByRole("button", { name: "列表" }).click();
+  await page.getByRole("button", { name: "媒体库" }).click();
   await expect(page.locator(".library-item").filter({ hasText: "movie.mp4" })).toBeVisible();
   await page.getByRole("tab", { name: "历史" }).click();
   await expect(page.locator(".library-main").filter({ hasText: "sample-h264-aac.mp4" })).toBeVisible();
@@ -800,7 +1434,9 @@ test("reopens the current file through the force-WASM UI", async ({ page }) => {
     buffer: video
   });
   await waitForMedia(page);
-  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("tab", { name: "播放", exact: true }).click();
+  await page.getByText("高级选项").click();
   await page.getByLabel("优先 WASM 解码").check();
   await page.getByRole("button", { name: "重新以 WASM 解码" }).click();
   await page.waitForFunction(() => {
@@ -827,11 +1463,22 @@ test("plays H.264 with non-macroblock-aligned dimensions", async ({ page }) => {
   });
   await waitForMedia(page);
   const snapshot = await state(page);
-  expect(snapshot.media?.decodePaths["video:0"]).toBe("wasm");
+  // Either path is valid for MP4: WebCodecs handles the cropped surface, and a
+  // decoder failure falls back to the custom WASM decoder at runtime. What must
+  // hold is that the real 1254x898 frame renders instead of a padded/tiled one.
+  expect(["webcodecs", "wasm"]).toContain(snapshot.media?.decodePaths["video:0"]);
+  const stream = await page.evaluate(() => {
+    const media = (window as unknown as PlayerWindow).__player?.getState().media as
+      | { streams?: { type: string; width?: number; height?: number }[] }
+      | null;
+    return media?.streams?.find((entry) => entry.type === "video") ?? null;
+  });
+  expect(stream?.width).toBe(1254);
+  expect(stream?.height).toBe(898);
   await page.getByRole("button", { name: "播放/暂停" }).click();
   await page.waitForFunction(() => {
     const current = (window as unknown as PlayerWindow).__player?.getState();
-    return Boolean(current && current.stats.renderedFrames > 3);
+    return Boolean(current && current.stats.renderedFrames > 3 && !current.error);
   });
 });
 
@@ -986,7 +1633,8 @@ test("switches between multiple audio tracks and preserves position", async ({ p
   expect(snapshot.positionUs).toBeGreaterThan(900_000);
   expect(snapshot.media?.decodePaths["audio:2"]).toBe("webcodecs");
 
-  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("tab", { name: "声音", exact: true }).click();
   const german = page.locator(".track-item").filter({ hasText: "deu" });
   await expect(german).toHaveClass(/selected/);
 });
@@ -1057,6 +1705,12 @@ test("plays AVI through the custom WASM video/audio path", async ({ page }) => {
   });
   const playing = await state(page);
   expect(playing.stats.decodedAudioFrames).toBeGreaterThan(0);
+  // The buffer figure comes from the AudioWorklet ring. An estimate that
+  // subtracts the same interval on every animation frame collapses to zero
+  // within one stats tick, so this would fail with the old accounting.
+  await expect
+    .poll(async () => (await state(page)).stats.audioBufferMs)
+    .toBeGreaterThan(100);
   await page.locator(".play-button").click();
   await page.waitForFunction(() => {
     const snapshot = (window as unknown as PlayerWindow).__player?.getState();

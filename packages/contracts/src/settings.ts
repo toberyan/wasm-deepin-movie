@@ -61,16 +61,19 @@ export const settingValueSchemas = {
   "audio.gainDb": z.number().min(-24).max(12),
   "audio.muted": z.boolean(),
   "audio.balance": ratioSigned,
+  "audio.channel": z.enum(["stereo", "left", "right"]),
   "audio.delayMs": z.number().min(-10000).max(10000),
   "audio.eq": z.array(z.number().min(-12).max(12)).length(10),
   "audio.deviceId": z.string().max(512),
   "subtitle.delayMs": z.number().min(-10000).max(10000),
   "subtitle.visible": z.boolean(),
   "subtitle.fontSizePct": z.number().min(50).max(250),
+  "subtitle.fontFamily": z.enum(["", "sans-serif", "serif", "monospace"]),
   "subtitle.forceStyle": z.boolean(),
   "playback.rate": z.number().min(0.25).max(4),
-  "playback.loop": z.enum(["off", "media", "playlist"]),
+  "playback.loop": z.enum(["off", "media", "playlist", "order", "shuffle"]),
   "playback.autoPlay": z.boolean(),
+  "playback.pauseOnHidden": z.boolean(),
   "playback.volumeStep": z.number().min(0.01).max(0.5),
   "app.theme": z.enum(["system", "dark", "light"]),
   "app.reduceMotion": z.boolean(),
@@ -247,7 +250,10 @@ export const SETTING_DEFINITIONS: Record<SettingId, SettingDefinition> = {
     id: "video.scaleMode",
     group: "video",
     title: { zh: "缩放方式", en: "Scaling" },
-    description: { zh: "画面缩放采样方式。", en: "Scaling filter." },
+    description: {
+      zh: "画面缩放采样方式；高质量为 Catmull-Rom 双三次重采样（放大时生效）。",
+      en: "Scaling filter; high quality uses Catmull-Rom bicubic resampling when upscaling."
+    },
     schema: settingValueSchemas["video.scaleMode"],
     defaultValue: "high-quality",
     unit: "enum",
@@ -259,7 +265,7 @@ export const SETTING_DEFINITIONS: Record<SettingId, SettingDefinition> = {
     enumLabels: [
       { value: "nearest", zh: "最近邻", en: "Nearest" },
       { value: "bilinear", zh: "双线性", en: "Bilinear" },
-      { value: "high-quality", zh: "高质量", en: "High quality" }
+      { value: "high-quality", zh: "高质量（双三次）", en: "High quality (bicubic)" }
     ]
   },
   "audio.volume": {
@@ -318,6 +324,25 @@ export const SETTING_DEFINITIONS: Record<SettingId, SettingDefinition> = {
     requires: [],
     stage: "p2",
     advanced: true
+  },
+  "audio.channel": {
+    id: "audio.channel",
+    group: "audio",
+    title: { zh: "声道", en: "Channel" },
+    description: { zh: "立体声或单侧声道输出。", en: "Stereo or single-side channel output." },
+    schema: settingValueSchemas["audio.channel"],
+    defaultValue: "stereo",
+    unit: "enum",
+    scope: "global",
+    requiresPipelineRebuild: false,
+    requires: [],
+    stage: "p1",
+    advanced: false,
+    enumLabels: [
+      { value: "stereo", zh: "立体声", en: "Stereo" },
+      { value: "left", zh: "左声道", en: "Left" },
+      { value: "right", zh: "右声道", en: "Right" }
+    ]
   },
   "audio.delayMs": {
     id: "audio.delayMs",
@@ -404,6 +429,26 @@ export const SETTING_DEFINITIONS: Record<SettingId, SettingDefinition> = {
     stage: "p1",
     advanced: false
   },
+  "subtitle.fontFamily": {
+    id: "subtitle.fontFamily",
+    group: "subtitle",
+    title: { zh: "字体", en: "Font family" },
+    description: { zh: "文本字幕的字体族；ASS 仍使用其内置字体。", en: "Font family for text subtitles; ASS keeps its embedded style." },
+    schema: settingValueSchemas["subtitle.fontFamily"],
+    defaultValue: "",
+    unit: "enum",
+    scope: "global",
+    requiresPipelineRebuild: false,
+    requires: [],
+    stage: "p1",
+    advanced: false,
+    enumLabels: [
+      { value: "", zh: "默认", en: "Default" },
+      { value: "sans-serif", zh: "无衬线", en: "Sans serif" },
+      { value: "serif", zh: "衬线", en: "Serif" },
+      { value: "monospace", zh: "等宽", en: "Monospace" }
+    ]
+  },
   "subtitle.forceStyle": {
     id: "subtitle.forceStyle",
     group: "subtitle",
@@ -435,8 +480,8 @@ export const SETTING_DEFINITIONS: Record<SettingId, SettingDefinition> = {
   "playback.loop": {
     id: "playback.loop",
     group: "playback",
-    title: { zh: "循环", en: "Loop" },
-    description: { zh: "关闭、单文件循环或列表循环。", en: "Off, single media or playlist loop." },
+    title: { zh: "播放模式", en: "Play mode" },
+    description: { zh: "单个播放、循环、顺序或随机播放。", en: "Single play, loop, sequential or shuffle." },
     schema: settingValueSchemas["playback.loop"],
     defaultValue: "off",
     unit: "enum",
@@ -446,9 +491,11 @@ export const SETTING_DEFINITIONS: Record<SettingId, SettingDefinition> = {
     stage: "p1",
     advanced: false,
     enumLabels: [
-      { value: "off", zh: "关闭", en: "Off" },
-      { value: "media", zh: "单文件", en: "Media" },
-      { value: "playlist", zh: "列表", en: "Playlist" }
+      { value: "off", zh: "单个播放", en: "Single play" },
+      { value: "media", zh: "单个循环", en: "Single loop" },
+      { value: "playlist", zh: "列表循环", en: "List loop" },
+      { value: "order", zh: "顺序播放", en: "Sequential" },
+      { value: "shuffle", zh: "随机播放", en: "Shuffle" }
     ]
   },
   "playback.autoPlay": {
@@ -464,6 +511,20 @@ export const SETTING_DEFINITIONS: Record<SettingId, SettingDefinition> = {
     requires: [],
     stage: "p1",
     advanced: false
+  },
+  "playback.pauseOnHidden": {
+    id: "playback.pauseOnHidden",
+    group: "playback",
+    title: { zh: "最小化时暂停", en: "Pause when hidden" },
+    description: { zh: "页面或窗口隐藏时暂停播放。", en: "Pause playback when the page or window is hidden." },
+    schema: settingValueSchemas["playback.pauseOnHidden"],
+    defaultValue: false,
+    unit: "boolean",
+    scope: "global",
+    requiresPipelineRebuild: false,
+    requires: [],
+    stage: "p1",
+    advanced: true
   },
   "playback.volumeStep": {
     id: "playback.volumeStep",
@@ -595,6 +656,7 @@ const audioPatchSchema = z
     gainDb: settingValueSchemas["audio.gainDb"].optional(),
     muted: settingValueSchemas["audio.muted"].optional(),
     balance: settingValueSchemas["audio.balance"].optional(),
+    channel: settingValueSchemas["audio.channel"].optional(),
     delayMs: settingValueSchemas["audio.delayMs"].optional(),
     eq: settingValueSchemas["audio.eq"].optional(),
     deviceId: settingValueSchemas["audio.deviceId"].optional()
@@ -606,6 +668,7 @@ const subtitlePatchSchema = z
     delayMs: settingValueSchemas["subtitle.delayMs"].optional(),
     visible: settingValueSchemas["subtitle.visible"].optional(),
     fontSizePct: settingValueSchemas["subtitle.fontSizePct"].optional(),
+    fontFamily: settingValueSchemas["subtitle.fontFamily"].optional(),
     forceStyle: settingValueSchemas["subtitle.forceStyle"].optional()
   })
   .strict();
@@ -615,6 +678,7 @@ const playbackPatchSchema = z
     rate: settingValueSchemas["playback.rate"].optional(),
     loop: settingValueSchemas["playback.loop"].optional(),
     autoPlay: settingValueSchemas["playback.autoPlay"].optional(),
+    pauseOnHidden: settingValueSchemas["playback.pauseOnHidden"].optional(),
     volumeStep: settingValueSchemas["playback.volumeStep"].optional()
   })
   .strict();

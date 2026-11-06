@@ -329,8 +329,8 @@
       "advanced": true,
       "defaultValue": "high-quality",
       "description": {
-        "en": "Scaling filter.",
-        "zh": "画面缩放采样方式。"
+        "en": "Scaling filter; high quality uses Catmull-Rom bicubic resampling when upscaling.",
+        "zh": "画面缩放采样方式；高质量为 Catmull-Rom 双三次重采样（放大时生效）。"
       },
       "enumLabels": [
         {
@@ -344,9 +344,9 @@
           "zh": "双线性"
         },
         {
-          "en": "High quality",
+          "en": "High quality (bicubic)",
           "value": "high-quality",
-          "zh": "高质量"
+          "zh": "高质量（双三次）"
         }
       ],
       "group": "video",
@@ -468,6 +468,51 @@
         "zh": "左右平衡"
       },
       "unit": "ratio"
+    },
+    {
+      "advanced": false,
+      "defaultValue": "stereo",
+      "description": {
+        "en": "Stereo or single-side channel output.",
+        "zh": "立体声或单侧声道输出。"
+      },
+      "enumLabels": [
+        {
+          "en": "Stereo",
+          "value": "stereo",
+          "zh": "立体声"
+        },
+        {
+          "en": "Left",
+          "value": "left",
+          "zh": "左声道"
+        },
+        {
+          "en": "Right",
+          "value": "right",
+          "zh": "右声道"
+        }
+      ],
+      "group": "audio",
+      "id": "audio.channel",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "stereo",
+          "left",
+          "right"
+        ],
+        "type": "string"
+      },
+      "scope": "global",
+      "stage": "p1",
+      "title": {
+        "en": "Channel",
+        "zh": "声道"
+      },
+      "unit": "enum"
     },
     {
       "advanced": true,
@@ -634,6 +679,57 @@
       "unit": "percent"
     },
     {
+      "advanced": false,
+      "defaultValue": "",
+      "description": {
+        "en": "Font family for text subtitles; ASS keeps its embedded style.",
+        "zh": "文本字幕的字体族；ASS 仍使用其内置字体。"
+      },
+      "enumLabels": [
+        {
+          "en": "Default",
+          "value": "",
+          "zh": "默认"
+        },
+        {
+          "en": "Sans serif",
+          "value": "sans-serif",
+          "zh": "无衬线"
+        },
+        {
+          "en": "Serif",
+          "value": "serif",
+          "zh": "衬线"
+        },
+        {
+          "en": "Monospace",
+          "value": "monospace",
+          "zh": "等宽"
+        }
+      ],
+      "group": "subtitle",
+      "id": "subtitle.fontFamily",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "",
+          "sans-serif",
+          "serif",
+          "monospace"
+        ],
+        "type": "string"
+      },
+      "scope": "global",
+      "stage": "p1",
+      "title": {
+        "en": "Font family",
+        "zh": "字体"
+      },
+      "unit": "enum"
+    },
+    {
       "advanced": true,
       "defaultValue": false,
       "description": {
@@ -685,24 +781,34 @@
       "advanced": false,
       "defaultValue": "off",
       "description": {
-        "en": "Off, single media or playlist loop.",
-        "zh": "关闭、单文件循环或列表循环。"
+        "en": "Single play, loop, sequential or shuffle.",
+        "zh": "单个播放、循环、顺序或随机播放。"
       },
       "enumLabels": [
         {
-          "en": "Off",
+          "en": "Single play",
           "value": "off",
-          "zh": "关闭"
+          "zh": "单个播放"
         },
         {
-          "en": "Media",
+          "en": "Single loop",
           "value": "media",
-          "zh": "单文件"
+          "zh": "单个循环"
         },
         {
-          "en": "Playlist",
+          "en": "List loop",
           "value": "playlist",
-          "zh": "列表"
+          "zh": "列表循环"
+        },
+        {
+          "en": "Sequential",
+          "value": "order",
+          "zh": "顺序播放"
+        },
+        {
+          "en": "Shuffle",
+          "value": "shuffle",
+          "zh": "随机播放"
         }
       ],
       "group": "playback",
@@ -714,15 +820,17 @@
         "enum": [
           "off",
           "media",
-          "playlist"
+          "playlist",
+          "order",
+          "shuffle"
         ],
         "type": "string"
       },
       "scope": "global",
       "stage": "p1",
       "title": {
-        "en": "Loop",
-        "zh": "循环"
+        "en": "Play mode",
+        "zh": "播放模式"
       },
       "unit": "enum"
     },
@@ -746,6 +854,29 @@
       "title": {
         "en": "Autoplay",
         "zh": "自动播放"
+      },
+      "unit": "boolean"
+    },
+    {
+      "advanced": true,
+      "defaultValue": false,
+      "description": {
+        "en": "Pause playback when the page or window is hidden.",
+        "zh": "页面或窗口隐藏时暂停播放。"
+      },
+      "group": "playback",
+      "id": "playback.pauseOnHidden",
+      "requires": [],
+      "requiresPipelineRebuild": false,
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "boolean"
+      },
+      "scope": "global",
+      "stage": "p1",
+      "title": {
+        "en": "Pause when hidden",
+        "zh": "最小化时暂停"
       },
       "unit": "boolean"
     },

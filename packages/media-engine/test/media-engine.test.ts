@@ -76,6 +76,21 @@ describe("VideoFrameQueue", () => {
     expect(queue.size).toBe(0);
   });
 
+  it("releases every expired frame through the callback", () => {
+    const released: number[] = [];
+    const queue = new VideoFrameQueue<TestFrame>(limits, (frame) => {
+      released.push(frame.timestampUs);
+    });
+    queue.push({ timestampUs: 0, durationUs: 33_333, byteLength: 100 });
+    queue.push({ timestampUs: 33_333, durationUs: 33_333, byteLength: 100 });
+    queue.push({ timestampUs: 66_666, durationUs: 33_333, byteLength: 100 });
+    const due = queue.takeDue(70_000);
+    expect(due?.timestampUs).toBe(66_666);
+    // Both expired frames are released; the returned frame stays owned by the
+    // caller until it is rendered.
+    expect(released).toEqual([0, 33_333]);
+  });
+
   it("does not return future frames", () => {
     const queue = new VideoFrameQueue<TestFrame>(limits);
     queue.push({ timestampUs: 100_000, byteLength: 100 });

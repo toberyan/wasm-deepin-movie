@@ -119,6 +119,8 @@ class WasmPlayerPcmProcessor extends AudioWorkletProcessor {
       atSec: currentTime,
       playing: this.playing,
       generation: this.generation,
+      bufferedUs:
+        ((this.writeFrame - this.readFrame) / this.sourceRate) * 1000000,
       buffering: this.writeFrame - this.readFrame < this.sourceRate * 0.05
     });
   }
@@ -161,6 +163,8 @@ export interface AudioClockSample {
   atSec: number;
   playing: boolean;
   buffering: boolean;
+  /** Frames still queued in the worklet ring, as microseconds of media. */
+  bufferedUs: number;
 }
 
 export class AudioOutput {
@@ -172,6 +176,7 @@ export class AudioOutput {
   private panner: StereoPannerNode | null = null;
   private gainDb = 0;
   private balance = 0;
+  private channelMode: "stereo" | "left" | "right" = "stereo";
   private eqGains: number[] = Array.from({ length: 10 }, () => 0);
   private eqFilters: BiquadFilterNode[] = [];
   private deviceId = "";
@@ -247,6 +252,10 @@ export class AudioOutput {
         this.pendingDelayFrames += drop;
       }
     }
+    if (this.channelMode !== "stereo" && channels.length >= 2) {
+      const source = channels[this.channelMode === "left" ? 0 : 1];
+      if (source) channels = [source, source];
+    }
     if (channels.length !== this.configuredChannels) {
       // Rebuilding the worklet graph keeps channel counts consistent. This is
       // rare (track change) and happens before the next append.
@@ -303,6 +312,10 @@ export class AudioOutput {
     this.node?.port.postMessage({ type: "gain", value: 10 ** (this.gainDb / 20) });
   }
 
+  setChannelMode(mode: "stereo" | "left" | "right"): void {
+    this.channelMode = mode;
+  }
+
   setBalance(balance: number): void {
     this.balance = Math.max(-1, Math.min(1, balance));
     const panner = this.panner;
@@ -355,6 +368,19 @@ export class AudioOutput {
       ...latest,
       mediaTimeUs: latest.mediaTimeUs + elapsed * this.rate * 1_000_000
     };
+  }
+
+  /**
+   * Audio still queued for playback. The worklet reports it with every clock
+   * message; between messages it drains in real time (rate-adjusted), so the
+   * caller never has to guess how much of the buffer was consumed.
+   */
+  getBufferedUs(): number {
+    const latest = this.latestClock;
+    if (!latest) return 0;
+    if (!latest.playing) return Math.max(0, latest.bufferedUs);
+    const elapsed = Math.max(0, (this.context?.currentTime ?? latest.atSec) - latest.atSec);
+    return Math.max(0, latest.bufferedUs - elapsed * this.rate * 1_000_000);
   }
 
   getContext(): AudioContext | null {
@@ -433,6 +459,7 @@ export class AudioOutput {
       playing?: boolean;
       buffering?: boolean;
       generation?: number;
+      bufferedUs?: number;
     }>) => {
       const message = event.data;
       if (message.type === "clock" && message.mediaTimeUs !== undefined) {
@@ -441,7 +468,8 @@ export class AudioOutput {
           mediaTimeUs: message.mediaTimeUs,
           atSec: message.atSec ?? 0,
           playing: message.playing ?? false,
-          buffering: message.buffering ?? false
+          buffering: message.buffering ?? false,
+          bufferedUs: typeof message.bufferedUs === "number" ? message.bufferedUs : 0
         };
         return;
       }

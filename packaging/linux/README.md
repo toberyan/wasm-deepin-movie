@@ -40,6 +40,32 @@ cd wasm-player-linux-x64
 - Python 3.10+ (`python3`)
 - Chrome / Chromium / Microsoft Edge 任一
 - 启动器优先使用 `WASM_PLAYER_BROWSER` 环境变量指定浏览器
+- 未把浏览器加入 `PATH` 时，启动器也会检查 `/opt/google/chrome`、
+  `/usr/lib/chromium*`、`/snap/bin/chromium`，以及
+  `~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome`
+  （Chrome for Testing / Playwright 缓存）
+
+若启动时提示“未找到可用的浏览器”，安装一个 Chromium 即可：
+
+```bash
+sudo apt install chromium
+# 或指定现有浏览器
+WASM_PLAYER_BROWSER=/path/to/chrome ~/.local/share/wasm-player/wasm-player
+```
+
+没有 root 权限时，便携包内提供了把 Chromium 解压到用户目录的脚本：
+
+```bash
+cd wasm-player-linux-x64
+./install-browser.sh
+```
+
+脚本只下载并解压 `chromium`、`chromium-common`、`chromium-sandbox` 和
+`libxnvctrl0`，安装到 `~/.local/share/wasm-player/browser`，不会修改系统。
+
+> 不建议使用 Playwright 缓存中的 Chrome for Testing 作为日常窗口：它会在窗口
+> 顶部显示不可移除的 “Chrome for Testing” 提示。启动器只在没有其他
+> Chromium/Chrome 时才会回退到它。
 
 ## 重新构建
 

@@ -1,10 +1,12 @@
 export interface SubtitleOverlayOptions {
   fontSizePct: number;
+  fontFamily: string;
   visible: boolean;
 }
 
 const DEFAULT_OPTIONS: SubtitleOverlayOptions = {
   fontSizePct: 100,
+  fontFamily: "",
   visible: true
 };
 
@@ -48,5 +50,6 @@ export class SubtitleOverlay {
   private applyStyles(): void {
     this.element.style.display = this.options.visible ? "block" : "none";
     this.element.style.fontSize = `${Math.max(50, Math.min(250, this.options.fontSizePct))}%`;
+    this.element.style.fontFamily = this.options.fontFamily;
   }
 }

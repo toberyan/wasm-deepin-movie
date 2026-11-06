@@ -57,7 +57,40 @@ uniform vec4 uCrop;
 uniform int uRotation;
 uniform float uSharpness;
 uniform vec2 uTexel;
+uniform int uBicubic;
 out vec4 outColor;
+
+// Catmull-Rom weights for the four taps around a fractional coordinate.
+vec4 cubicWeights(float t) {
+  float t2 = t * t;
+  float t3 = t2 * t;
+  return vec4(
+    -0.5 * t3 + t2 - 0.5 * t,
+     1.5 * t3 - 2.5 * t2 + 1.0,
+    -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+     0.5 * t3 - 0.5 * t2
+  );
+}
+
+// 4x4 Catmull-Rom resampling. Nearest is handled by the texture filter,
+// bilinear by the hardware sampler, and this path is the actual
+// "high-quality" mode used when the picture is upscaled.
+vec3 bicubicSample(vec2 uv) {
+  vec2 size = vec2(textureSize(uTexture, 0));
+  vec2 coord = clamp(uv, vec2(0.0), vec2(1.0)) * size - 0.5;
+  vec2 base = floor(coord);
+  vec2 fraction = coord - base;
+  vec4 wx = cubicWeights(fraction.x);
+  vec4 wy = cubicWeights(fraction.y);
+  vec3 sum = vec3(0.0);
+  for (int y = 0; y < 4; y++) {
+    for (int x = 0; x < 4; x++) {
+      vec2 pos = clamp(base + vec2(float(x - 1), float(y - 1)), vec2(0.0), size - 1.0);
+      sum += texelFetch(uTexture, ivec2(pos), 0).rgb * (wx[x] * wy[y]);
+    }
+  }
+  return sum;
+}
 
 vec3 hueShift(vec3 color, float angle) {
   float s = sin(angle);
@@ -88,7 +121,7 @@ void main() {
   } else if (uRotation == 270) {
     uv = vec2(1.0 - uv.y, uv.x);
   }
-  vec4 tex = texture(uTexture, uv);
+  vec4 tex = uBicubic == 1 ? vec4(bicubicSample(uv), 1.0) : texture(uTexture, uv);
   vec3 color = tex.rgb;
   if (uSharpness > 0.0) {
     vec3 blur = (
@@ -169,6 +202,8 @@ export class WebGL2Renderer {
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private textureWidth = 0;
   private textureHeight = 0;
+  private lastWidth = 0;
+  private lastHeight = 0;
   private readonly frameCanvas = document.createElement("canvas");
   private readonly frameContext = this.frameCanvas.getContext("2d", { alpha: false });
   private lost = false;
@@ -183,6 +218,7 @@ export class WebGL2Renderer {
 
   setSettings(settings: Partial<RenderSettings>): void {
     this.settings = { ...this.settings, ...settings };
+    this.redraw();
   }
 
   getSettings(): RenderSettings {
@@ -192,15 +228,49 @@ export class WebGL2Renderer {
   resize(width: number, height: number, dpr = 1): void {
     const pixelWidth = Math.max(1, Math.round(width * dpr));
     const pixelHeight = Math.max(1, Math.round(height * dpr));
-    if (this.canvas.width !== pixelWidth) this.canvas.width = pixelWidth;
-    if (this.canvas.height !== pixelHeight) this.canvas.height = pixelHeight;
+    if (this.canvas.width === pixelWidth && this.canvas.height === pixelHeight) return;
+    this.canvas.width = pixelWidth;
+    this.canvas.height = pixelHeight;
+    this.redraw();
+  }
+
+  /**
+   * Re-renders the retained texture after a canvas resize, theme change or
+   * settings update. Resizing a canvas clears its drawing buffer, so paused
+   * playback would otherwise turn black until the next decoded frame.
+   */
+  redraw(): void {
+    const gl = this.gl;
+    const program = this.program;
+    if (!gl || !program || this.lost) return;
+    if (this.textureWidth === 0 || this.lastWidth === 0) return;
+    gl.useProgram(program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    this.present(this.lastWidth, this.lastHeight);
   }
 
   render(frame: VideoFrame): void {
-    const width = frame.displayWidth || frame.codedWidth;
-    const height = frame.displayHeight || frame.codedHeight;
+    let width = frame.displayWidth || frame.codedWidth;
+    let height = frame.displayHeight || frame.codedHeight;
     let source: TexImageSource = frame;
-    if (
+    // Large H.264 frames (e.g. 2296x1522 screen recordings) are expensive to
+    // upload to WebGL on every frame. Scale them once into a 2D canvas capped
+    // to the visible canvas size; the shader still applies the fit/crop
+    // transform. This trades a cheap 2D scale for a much smaller texture
+    // upload and avoids dropping most frames at 24 fps.
+    const maxDimension = Math.max(1280, this.canvas.width, this.canvas.height);
+    if (this.frameContext && (width > maxDimension || height > maxDimension)) {
+      const scale = maxDimension / Math.max(width, height);
+      const scaledWidth = Math.max(1, Math.round(width * scale));
+      const scaledHeight = Math.max(1, Math.round(height * scale));
+      if (this.frameCanvas.width !== scaledWidth) this.frameCanvas.width = scaledWidth;
+      if (this.frameCanvas.height !== scaledHeight) this.frameCanvas.height = scaledHeight;
+      this.frameContext.drawImage(frame, 0, 0, scaledWidth, scaledHeight);
+      source = this.frameCanvas;
+      width = scaledWidth;
+      height = scaledHeight;
+    } else if (
       this.frameContext &&
       (frame.codedWidth !== width || frame.codedHeight !== height)
     ) {
@@ -218,10 +288,8 @@ export class WebGL2Renderer {
 
   private drawSource(source: TexImageSource, width: number, height: number): void {
     const gl = this.gl;
-    if (!gl || this.lost) return;
     const program = this.program;
-    if (!program) return;
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    if (!gl || !program || this.lost) return;
     gl.useProgram(program);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -234,6 +302,17 @@ export class WebGL2Renderer {
     } else {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
     }
+    this.present(width, height);
+  }
+
+  private present(width: number, height: number): void {
+    const gl = this.gl;
+    const program = this.program;
+    if (!gl || !program || this.lost || width <= 0 || height <= 0) return;
+    this.lastWidth = width;
+    this.lastHeight = height;
+    gl.useProgram(program);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     const crop = this.settings.crop;
     const visibleWidth = width * (1 - crop.left - crop.right);
     const visibleHeight = height * (1 - crop.top - crop.bottom);
@@ -250,6 +329,15 @@ export class WebGL2Renderer {
     const filter = this.settings.scaleMode === "nearest" ? gl.NEAREST : gl.LINEAR;
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    // Bicubic resampling only differs from the hardware bilinear filter when
+    // the picture is enlarged; downscaling keeps the cheaper sampler. Compare
+    // the area the quad actually covers (letterbox bars excluded) with the
+    // source texture area.
+    const displayedArea =
+      Math.abs(scaleX * scaleY) * this.canvas.width * this.canvas.height;
+    const bicubic =
+      this.settings.scaleMode === "high-quality" && displayedArea > width * height * 1.001;
+    gl.uniform1i(this.uniforms.uBicubic ?? null, bicubic ? 1 : 0);
     gl.uniform2f(this.uniforms.uScale ?? null, scaleX, scaleY);
     gl.uniform1f(this.uniforms.uBrightness ?? null, this.settings.brightness);
     gl.uniform1f(this.uniforms.uContrast ?? null, this.settings.contrast);
@@ -331,7 +419,8 @@ export class WebGL2Renderer {
       depth: false,
       stencil: false,
       preserveDrawingBuffer: true,
-      desynchronized: true
+      desynchronized: false,
+      powerPreference: "high-performance"
     });
     if (!gl) throw new Error("WebGL2 is unavailable");
     this.gl = gl;
@@ -372,7 +461,8 @@ export class WebGL2Renderer {
       uCrop: gl.getUniformLocation(this.program, "uCrop"),
       uRotation: gl.getUniformLocation(this.program, "uRotation"),
       uSharpness: gl.getUniformLocation(this.program, "uSharpness"),
-      uTexel: gl.getUniformLocation(this.program, "uTexel")
+      uTexel: gl.getUniformLocation(this.program, "uTexel"),
+      uBicubic: gl.getUniformLocation(this.program, "uBicubic")
     };
     this.textureWidth = 0;
     this.textureHeight = 0;

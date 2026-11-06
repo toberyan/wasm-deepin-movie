@@ -1,13 +1,37 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ACTION_IDS,
   PlayerError,
+  fileIdentityOf,
   type ActionId,
   type InvokeResult,
-  type PlayerEvent
+  type PersistedPlayerState,
+  type PlayerEvent,
+  type PlayerStorage
 } from "@wasm-player/contracts";
 import { FakeMediaEngine } from "@wasm-player/media-engine";
 import { PlayerController, type PlayerHost } from "../src/index";
+
+/**
+ * Local test double. The dependency rules forbid player-core (including its
+ * tests) from importing a concrete storage adapter, so persistence is exercised
+ * through this in-memory implementation of the `PlayerStorage` port.
+ */
+class TestPlayerStorage implements PlayerStorage {
+  private state: PersistedPlayerState | null = null;
+
+  async load(): Promise<PersistedPlayerState | null> {
+    return this.state === null ? null : structuredClone(this.state);
+  }
+
+  async save(state: PersistedPlayerState): Promise<void> {
+    this.state = structuredClone(state);
+  }
+
+  async clear(): Promise<void> {
+    this.state = null;
+  }
+}
 
 function sampleFile(name = "sample.mp4"): File {
   return new File([new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112])], name, {
@@ -15,12 +39,27 @@ function sampleFile(name = "sample.mp4"): File {
   });
 }
 
-function createController(host?: PlayerHost) {
+function playlistNames(output: unknown): string[] {
+  if (!output || typeof output !== "object" || !("items" in output)) {
+    throw new Error("playlist output is missing items");
+  }
+  const items: unknown = output.items;
+  if (!Array.isArray(items)) throw new Error("playlist items is not an array");
+  return items.map((item) => {
+    if (!item || typeof item !== "object" || !("name" in item) || typeof item.name !== "string") {
+      throw new Error("playlist item is missing a name");
+    }
+    return item.name;
+  });
+}
+
+function createController(host?: PlayerHost, storage?: PlayerStorage) {
   const engine = new FakeMediaEngine();
   const controller = new PlayerController({
     engine,
     sessionId: "test-session",
     host,
+    storage,
     now: () => 1_700_000_000_000
   });
   let requestSeq = 0;
@@ -115,6 +154,44 @@ describe("PlayerController", () => {
     const state = pair.controller.getState();
     expect(state.media?.name).toBe("second.mp4");
     expect(state.phase).toBe("playing");
+  });
+
+  it("plays the playlist in order and stops after the last item", async () => {
+    const pair = createController();
+    await pair.invoke(ACTION_IDS.playlistAdd, {
+      sources: [
+        { kind: "file", file: sampleFile("first.mp4"), name: "first.mp4" },
+        { kind: "file", file: sampleFile("second.mp4"), name: "second.mp4" }
+      ]
+    });
+    expect((await pair.invoke(ACTION_IDS.loopSet, { mode: "order" })).status).toBe("applied");
+    await pair.invoke(ACTION_IDS.playlistPlay, { index: 0 });
+    await pair.invoke(ACTION_IDS.playbackSeek, { positionUs: 120_000_000 });
+    await vi.waitFor(() => {
+      expect(pair.controller.getState().media?.name).toBe("second.mp4");
+    });
+
+    await pair.invoke(ACTION_IDS.playbackSeek, { positionUs: 120_000_000 });
+    await vi.waitFor(() => {
+      expect(pair.controller.getState().phase).toBe("ended");
+    });
+    expect(pair.controller.getState().media?.name).toBe("second.mp4");
+  });
+
+  it("reorders playlist entries without losing the current index", async () => {
+    const pair = createController();
+    await pair.invoke(ACTION_IDS.playlistAdd, {
+      sources: [
+        { kind: "file", file: sampleFile("a.mp4"), name: "a.mp4" },
+        { kind: "file", file: sampleFile("b.mp4"), name: "b.mp4" },
+        { kind: "file", file: sampleFile("c.mp4"), name: "c.mp4" }
+      ]
+    });
+    expect((await pair.invoke(ACTION_IDS.playlistMove, { from: 2, to: 0 })).status).toBe(
+      "applied"
+    );
+    const list = await pair.invoke(ACTION_IDS.playlistList);
+    expect(playlistNames(list.output)).toEqual(["c.mp4", "a.mp4", "b.mp4"]);
   });
 
   it("rejects stale expectedRevision without changing state", async () => {
@@ -353,6 +430,240 @@ describe("PlayerController", () => {
     expect(bookmark.status).toBe("applied");
     const bookmarks = await invoke(ACTION_IDS.bookmarksList);
     expect((bookmarks.output as { items: unknown[] }).items).toHaveLength(1);
+  });
+
+  it("executes a duplicate in-flight request once", async () => {
+    const pair = createController();
+    await open(pair.controller, pair.invoke);
+    const request = {
+      requestId: "duplicate-in-flight",
+      sessionId: "test-session",
+      action: ACTION_IDS.bookmarksAdd,
+      params: { name: "once", positionUs: 1_000 }
+    };
+    const results = await Promise.all([
+      pair.controller.invoke(request),
+      pair.controller.invoke(request)
+    ]);
+    expect(results.map((result) => result.status)).toEqual(["applied", "applied"]);
+    const listed = await pair.invoke(ACTION_IDS.bookmarksList);
+    expect((listed.output as { items: unknown[] }).items).toHaveLength(1);
+  });
+
+  it("rejects the second write that expects the same revision", async () => {
+    const pair = createController();
+    await open(pair.controller, pair.invoke);
+    const revision = pair.controller.getState().revision;
+    const write = (requestId: string, name: string) =>
+      pair.controller.invoke({
+        requestId,
+        sessionId: "test-session",
+        action: ACTION_IDS.bookmarksAdd,
+        params: { name, positionUs: 1_000 },
+        expectedRevision: revision
+      });
+    const results = await Promise.all([write("write-a", "a"), write("write-b", "b")]);
+    const statuses = results.map((result) => result.status).sort();
+    expect(statuses).toEqual(["applied", "rejected"]);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected?.error?.code).toBe("REVISION_CONFLICT");
+    // Only the winning write took effect.
+    const listed = await pair.invoke(ACTION_IDS.bookmarksList);
+    expect((listed.output as { items: unknown[] }).items).toHaveLength(1);
+  });
+
+  it("releases capture results and bounds the finished job list", async () => {
+    let clock = 1_700_000_000_000;
+    const engine = new FakeMediaEngine();
+    const controller = new PlayerController({
+      engine,
+      sessionId: "jobs-session",
+      now: () => clock,
+      jobRetention: { maxEntries: 1, ttlMs: 50 }
+    });
+    let seq = 0;
+    const invoke = (action: ActionId, params: Record<string, unknown> = {}) =>
+      controller.invoke<unknown, Record<string, unknown>>({
+        requestId: `job-req-${(seq += 1)}`,
+        sessionId: "jobs-session",
+        action,
+        params
+      });
+    const waitForBlob = async (jobId: string): Promise<Blob | undefined> => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const blob = controller.getJobBlob(jobId);
+        if (blob) return blob;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      return undefined;
+    };
+
+    await invoke(ACTION_IDS.mediaOpen, {
+      source: { kind: "file", file: sampleFile() },
+      autoPlay: false
+    });
+    const first = await invoke(ACTION_IDS.captureCreate, { format: "png" });
+    const firstId = first.jobId as string;
+    expect(await waitForBlob(firstId)).toBeDefined();
+    expect(controller.releaseJob(firstId)).toBe(true);
+    expect(controller.getJobBlob(firstId)).toBeUndefined();
+
+    // Entry budget: the second finished job evicts the first one.
+    const second = await invoke(ACTION_IDS.captureCreate, { format: "png" });
+    expect(await waitForBlob(second.jobId as string)).toBeDefined();
+    clock += 10;
+    const third = await invoke(ACTION_IDS.captureCreate, { format: "png" });
+    expect(await waitForBlob(third.jobId as string)).toBeDefined();
+    expect(controller.getJobBlob(second.jobId as string)).toBeUndefined();
+
+    // Expiry: finished jobs older than the TTL are dropped on the next prune.
+    clock += 1_000;
+    const fourth = await invoke(ACTION_IDS.captureCreate, { format: "png" });
+    expect(await waitForBlob(fourth.jobId as string)).toBeDefined();
+    expect(controller.getJobBlob(third.jobId as string)).toBeUndefined();
+    await controller.dispose();
+  });
+
+  it("keeps the current playlist entry in sync with auto-advance and direct opens", async () => {
+    const pair = createController();
+    const first = sampleFile("first.mp4");
+    const second = sampleFile("second.mp4");
+    await pair.invoke(ACTION_IDS.playlistAdd, {
+      sources: [
+        { kind: "file", file: first, name: "first.mp4" },
+        { kind: "file", file: second, name: "second.mp4" }
+      ]
+    });
+    await pair.invoke(ACTION_IDS.loopSet, { mode: "order" });
+    await pair.invoke(ACTION_IDS.playlistPlay, { index: 0 });
+    expect(pair.controller.getState().playlistIndex).toBe(0);
+
+    // Auto-advance on end of media moves the controller's current entry; the
+    // UI and SDK read this instead of tracking their own copy.
+    await pair.invoke(ACTION_IDS.playbackSeek, { positionUs: 120_000_000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pair.controller.getState().media?.name).toBe("second.mp4");
+    expect(pair.controller.getState().playlistIndex).toBe(1);
+
+    // Opening the same file directly makes its entry current again.
+    await pair.invoke(ACTION_IDS.mediaOpen, {
+      source: { kind: "file", file: first, name: "first.mp4" }
+    });
+    expect(pair.controller.getState().playlistIndex).toBe(0);
+
+    // Adding the file that is already playing marks the new entry current.
+    const third = sampleFile("third.mp4");
+    await pair.invoke(ACTION_IDS.mediaOpen, {
+      source: { kind: "file", file: third, name: "third.mp4" }
+    });
+    expect(pair.controller.getState().playlistIndex).toBeNull();
+    const added = await pair.invoke(ACTION_IDS.playlistAdd, {
+      sources: [{ kind: "file", file: third, name: "third.mp4" }]
+    });
+    const items = (added.output as { items: { index: number; name: string }[] }).items;
+    const thirdIndex = items.find((item) => item.name === "third.mp4")?.index;
+    expect(thirdIndex).toBeGreaterThanOrEqual(0);
+    expect(pair.controller.getState().playlistIndex).toBe(thirdIndex);
+  });
+
+  it("steps backward through decoded frames", async () => {
+    const pair = createController();
+    await open(pair.controller, pair.invoke);
+    await pair.invoke(ACTION_IDS.playbackSeek, { positionUs: 10_000_000 });
+    const backward = await pair.invoke(ACTION_IDS.playbackStep, {
+      frames: 2,
+      direction: "backward"
+    });
+    expect(backward.status).toBe("applied");
+    expect(pair.controller.getState().positionUs).toBeLessThan(10_000_000);
+  });
+
+  it("deduplicates local playlist entries by file identity", async () => {
+    const pair = createController();
+    const file = new File([new Uint8Array([1, 2, 3])], "movie.mkv", {
+      lastModified: 1_700_000_000_000
+    });
+    const sameNameDifferentFile = new File([new Uint8Array([4, 5, 6, 7])], "movie.mkv", {
+      lastModified: 1_700_000_050_000
+    });
+    await pair.invoke(ACTION_IDS.playlistAdd, {
+      sources: [{ kind: "file", file, name: "movie.mkv" }]
+    });
+    await pair.invoke(ACTION_IDS.playlistAdd, {
+      sources: [
+        { kind: "file", file, name: "movie.mkv" },
+        { kind: "file", file: sameNameDifferentFile, name: "movie.mkv" }
+      ]
+    });
+    const listed = await pair.invoke(ACTION_IDS.playlistList);
+    const items = (listed.output as { items: { identity?: string }[] }).items;
+    // The identical file is refreshed in place; the other movie.mkv stays a
+    // separate entry instead of being merged by name.
+    expect(items).toHaveLength(2);
+    expect(new Set(items.map((item) => item.identity)).size).toBe(2);
+  });
+
+  it("restores local playlist entries by identity and relinks them", async () => {
+    const storage = new TestPlayerStorage();
+    const bytes = new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]);
+    const file = new File([bytes], "movie.mkv", {
+      type: "video/x-matroska",
+      lastModified: 1_700_000_000_000
+    });
+    const identity = fileIdentityOf(file);
+    expect(identity).toBeTruthy();
+
+    const first = createController(undefined, storage);
+    await first.controller.ready;
+    expect(
+      (
+        await first.invoke(ACTION_IDS.playlistAdd, {
+          sources: [{ kind: "file", file, name: file.name }]
+        })
+      ).status
+    ).toBe("applied");
+    await first.controller.dispose();
+
+    const second = createController(undefined, storage);
+    await second.controller.ready;
+    const listed = await second.invoke(ACTION_IDS.playlistList);
+    const items = (
+      listed.output as {
+        items: { name: string; kind: string; available: boolean; identity?: string }[];
+      }
+    ).items;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      name: "movie.mkv",
+      kind: "file",
+      available: false,
+      identity
+    });
+
+    const blocked = await second.invoke(ACTION_IDS.playlistPlay, { index: 0 });
+    expect(blocked.status).toBe("rejected");
+    expect(blocked.error?.code).toBe("SOURCE_NOT_AUTHORIZED");
+
+    // Selecting the same file again relinks the entry instead of adding a new one.
+    const reopened = new File([bytes], "movie.mkv", {
+      type: "video/x-matroska",
+      lastModified: 1_700_000_000_000
+    });
+    expect(
+      (
+        await second.invoke(ACTION_IDS.mediaOpen, {
+          source: { kind: "file", file: reopened, name: "movie.mkv" }
+        })
+      ).status
+    ).toBe("applied");
+    const relinked = await second.invoke(ACTION_IDS.playlistList);
+    const relinkedItems = (relinked.output as { items: { available: boolean }[] }).items;
+    expect(relinkedItems).toHaveLength(1);
+    expect(relinkedItems[0]?.available).toBe(true);
+    expect((await second.invoke(ACTION_IDS.playlistPlay, { index: 0 })).status).toBe(
+      "applied"
+    );
+    await second.controller.dispose();
   });
 
   it("throws a typed error when disposed", async () => {

@@ -1,20 +1,30 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { readFileSync } from "node:fs";
 import { createMcpServer } from "@wasm-player/mcp-server";
 import { MediaBroker } from "./broker";
 import { CompanionServer } from "./http-server";
+import { RemoteProxy } from "./remote-proxy";
 import { parseArgs } from "./args";
 import { createSessionToken } from "./token";
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const token = args.token ?? createSessionToken();
+  const token = args.tokenFile
+    ? readFileSync(args.tokenFile, "utf8").trim()
+    : args.token ?? createSessionToken();
+  if (!token) throw new Error("companion token is empty");
   const broker = new MediaBroker(args.allowRoots);
+  const remote = new RemoteProxy({
+    allowDomains: args.allowDomains,
+    allowPrivateNetwork: args.allowPrivateNetwork
+  });
   const companion = new CompanionServer({
     host: args.host,
     port: args.port,
     token,
     webRoot: args.webRoot,
-    broker
+    broker,
+    remote
   });
   await companion.start();
   console.error(`[companion] listening on ${companion.url}`);

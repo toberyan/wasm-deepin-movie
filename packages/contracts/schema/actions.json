@@ -1372,6 +1372,11 @@
                       },
                       "type": "object"
                     },
+                    "identity": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "type": "string"
+                    },
                     "kind": {
                       "enum": [
                         "file",
@@ -1755,8 +1760,8 @@
     {
       "cancellable": false,
       "description": {
-        "en": "Set off, media or playlist loop.",
-        "zh": "设置关闭、单文件或列表循环。"
+        "en": "Set single, loop, sequential or shuffle playback.",
+        "zh": "设置单个播放、循环、顺序或随机播放。"
       },
       "events": [
         "settingsApplied",
@@ -1771,7 +1776,9 @@
             "enum": [
               "off",
               "media",
-              "playlist"
+              "playlist",
+              "order",
+              "shuffle"
             ],
             "type": "string"
           }
@@ -1871,6 +1878,14 @@
                     "minimum": -1,
                     "type": "number"
                   },
+                  "channel": {
+                    "enum": [
+                      "stereo",
+                      "left",
+                      "right"
+                    ],
+                    "type": "string"
+                  },
                   "delayMs": {
                     "maximum": 10000,
                     "minimum": -10000,
@@ -1916,9 +1931,14 @@
                     "enum": [
                       "off",
                       "media",
-                      "playlist"
+                      "playlist",
+                      "order",
+                      "shuffle"
                     ],
                     "type": "string"
+                  },
+                  "pauseOnHidden": {
+                    "type": "boolean"
                   },
                   "rate": {
                     "maximum": 4,
@@ -1940,6 +1960,15 @@
                     "maximum": 10000,
                     "minimum": -10000,
                     "type": "number"
+                  },
+                  "fontFamily": {
+                    "enum": [
+                      "",
+                      "sans-serif",
+                      "serif",
+                      "monospace"
+                    ],
+                    "type": "string"
                   },
                   "fontSizePct": {
                     "maximum": 250,
@@ -2200,6 +2229,11 @@
                   "type": "string"
                 },
                 "type": "object"
+              },
+              "identity": {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
               },
               "kind": {
                 "enum": [
@@ -2575,6 +2609,11 @@
                   "type": "string"
                 },
                 "type": "object"
+              },
+              "identity": {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
               },
               "kind": {
                 "enum": [
@@ -3246,8 +3285,8 @@
     {
       "cancellable": true,
       "description": {
-        "en": "Step forward while paused.",
-        "zh": "暂停状态下向前逐帧。"
+        "en": "Step forward or backward by decoded frame timestamps while paused.",
+        "zh": "按解码帧时间戳向前或向后逐帧（暂停状态）。"
       },
       "events": [
         "position",
@@ -3259,8 +3298,11 @@
         "additionalProperties": false,
         "properties": {
           "direction": {
-            "const": "forward",
             "default": "forward",
+            "enum": [
+              "forward",
+              "backward"
+            ],
             "type": "string"
           },
           "frames": {
@@ -3367,6 +3409,11 @@
                   },
                   "type": "object"
                 },
+                "identity": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
                 "kind": {
                   "enum": [
                     "file",
@@ -3418,14 +3465,28 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "available": {
+                  "type": "boolean"
+                },
                 "durationUs": {
                   "minimum": 0,
                   "type": "number"
+                },
+                "identity": {
+                  "type": "string"
                 },
                 "index": {
                   "maximum": 9007199254740991,
                   "minimum": 0,
                   "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "file",
+                    "url",
+                    "sourceId"
+                  ],
+                  "type": "string"
                 },
                 "name": {
                   "type": "string"
@@ -3494,14 +3555,28 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "available": {
+                  "type": "boolean"
+                },
                 "durationUs": {
                   "minimum": 0,
                   "type": "number"
+                },
+                "identity": {
+                  "type": "string"
                 },
                 "index": {
                   "maximum": 9007199254740991,
                   "minimum": 0,
                   "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "file",
+                    "url",
+                    "sourceId"
+                  ],
+                  "type": "string"
                 },
                 "name": {
                   "type": "string"
@@ -3568,14 +3643,28 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "available": {
+                  "type": "boolean"
+                },
                 "durationUs": {
                   "minimum": 0,
                   "type": "number"
+                },
+                "identity": {
+                  "type": "string"
                 },
                 "index": {
                   "maximum": 9007199254740991,
                   "minimum": 0,
                   "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "file",
+                    "url",
+                    "sourceId"
+                  ],
+                  "type": "string"
                 },
                 "name": {
                   "type": "string"
@@ -3611,6 +3700,112 @@
         "keywords": [
           "playlist",
           "list",
+          "列表"
+        ]
+      }
+    },
+    {
+      "cancellable": false,
+      "description": {
+        "en": "Move a playlist item from one index to another.",
+        "zh": "把列表项从 from 移动到 to。"
+      },
+      "events": [
+        "state"
+      ],
+      "id": "playlist.move",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "to": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "longRunning": false,
+      "mcp": {
+        "tool": "playlist_move"
+      },
+      "media": "forbidden",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "available": {
+                  "type": "boolean"
+                },
+                "durationUs": {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "identity": {
+                  "type": "string"
+                },
+                "index": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "file",
+                    "url",
+                    "sourceId"
+                  ],
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "sourceId": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "index",
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "requires": [],
+      "title": {
+        "en": "Move playlist item",
+        "zh": "调整列表顺序"
+      },
+      "ui": {
+        "group": "playlist",
+        "keywords": [
+          "playlist",
+          "move",
+          "reorder",
           "列表"
         ]
       }
@@ -3987,14 +4182,28 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "available": {
+                  "type": "boolean"
+                },
                 "durationUs": {
                   "minimum": 0,
                   "type": "number"
+                },
+                "identity": {
+                  "type": "string"
                 },
                 "index": {
                   "maximum": 9007199254740991,
                   "minimum": 0,
                   "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "file",
+                    "url",
+                    "sourceId"
+                  ],
+                  "type": "string"
                 },
                 "name": {
                   "type": "string"
@@ -4157,6 +4366,14 @@
                     "minimum": -1,
                     "type": "number"
                   },
+                  "channel": {
+                    "enum": [
+                      "stereo",
+                      "left",
+                      "right"
+                    ],
+                    "type": "string"
+                  },
                   "delayMs": {
                     "maximum": 10000,
                     "minimum": -10000,
@@ -4202,9 +4419,14 @@
                     "enum": [
                       "off",
                       "media",
-                      "playlist"
+                      "playlist",
+                      "order",
+                      "shuffle"
                     ],
                     "type": "string"
+                  },
+                  "pauseOnHidden": {
+                    "type": "boolean"
                   },
                   "rate": {
                     "maximum": 4,
@@ -4226,6 +4448,15 @@
                     "maximum": 10000,
                     "minimum": -10000,
                     "type": "number"
+                  },
+                  "fontFamily": {
+                    "enum": [
+                      "",
+                      "sans-serif",
+                      "serif",
+                      "monospace"
+                    ],
+                    "type": "string"
                   },
                   "fontSizePct": {
                     "maximum": 250,
@@ -4528,6 +4759,14 @@
                         "minimum": -1,
                         "type": "number"
                       },
+                      "channel": {
+                        "enum": [
+                          "stereo",
+                          "left",
+                          "right"
+                        ],
+                        "type": "string"
+                      },
                       "delayMs": {
                         "maximum": 10000,
                         "minimum": -10000,
@@ -4573,9 +4812,14 @@
                         "enum": [
                           "off",
                           "media",
-                          "playlist"
+                          "playlist",
+                          "order",
+                          "shuffle"
                         ],
                         "type": "string"
+                      },
+                      "pauseOnHidden": {
+                        "type": "boolean"
                       },
                       "rate": {
                         "maximum": 4,
@@ -4597,6 +4841,15 @@
                         "maximum": 10000,
                         "minimum": -10000,
                         "type": "number"
+                      },
+                      "fontFamily": {
+                        "enum": [
+                          "",
+                          "sans-serif",
+                          "serif",
+                          "monospace"
+                        ],
+                        "type": "string"
                       },
                       "fontSizePct": {
                         "maximum": 250,
@@ -4966,6 +5219,14 @@
                     "minimum": -1,
                     "type": "number"
                   },
+                  "channel": {
+                    "enum": [
+                      "stereo",
+                      "left",
+                      "right"
+                    ],
+                    "type": "string"
+                  },
                   "delayMs": {
                     "maximum": 10000,
                     "minimum": -10000,
@@ -5011,9 +5272,14 @@
                     "enum": [
                       "off",
                       "media",
-                      "playlist"
+                      "playlist",
+                      "order",
+                      "shuffle"
                     ],
                     "type": "string"
+                  },
+                  "pauseOnHidden": {
+                    "type": "boolean"
                   },
                   "rate": {
                     "maximum": 4,
@@ -5035,6 +5301,15 @@
                     "maximum": 10000,
                     "minimum": -10000,
                     "type": "number"
+                  },
+                  "fontFamily": {
+                    "enum": [
+                      "",
+                      "sans-serif",
+                      "serif",
+                      "monospace"
+                    ],
+                    "type": "string"
                   },
                   "fontSizePct": {
                     "maximum": 250,
@@ -5264,6 +5539,14 @@
                     "minimum": -1,
                     "type": "number"
                   },
+                  "channel": {
+                    "enum": [
+                      "stereo",
+                      "left",
+                      "right"
+                    ],
+                    "type": "string"
+                  },
                   "delayMs": {
                     "maximum": 10000,
                     "minimum": -10000,
@@ -5309,9 +5592,14 @@
                     "enum": [
                       "off",
                       "media",
-                      "playlist"
+                      "playlist",
+                      "order",
+                      "shuffle"
                     ],
                     "type": "string"
+                  },
+                  "pauseOnHidden": {
+                    "type": "boolean"
                   },
                   "rate": {
                     "maximum": 4,
@@ -5333,6 +5621,15 @@
                     "maximum": 10000,
                     "minimum": -10000,
                     "type": "number"
+                  },
+                  "fontFamily": {
+                    "enum": [
+                      "",
+                      "sans-serif",
+                      "serif",
+                      "monospace"
+                    ],
+                    "type": "string"
                   },
                   "fontSizePct": {
                     "maximum": 250,
@@ -6408,6 +6705,18 @@
             ],
             "type": "string"
           },
+          "playlistIndex": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "positionUs": {
             "type": "number"
           },
@@ -6763,6 +7072,7 @@
           "media",
           "tracks",
           "selected",
+          "playlistIndex",
           "positionUs",
           "durationUs",
           "rate",
@@ -7611,6 +7921,14 @@
                     "minimum": -1,
                     "type": "number"
                   },
+                  "channel": {
+                    "enum": [
+                      "stereo",
+                      "left",
+                      "right"
+                    ],
+                    "type": "string"
+                  },
                   "delayMs": {
                     "maximum": 10000,
                     "minimum": -10000,
@@ -7656,9 +7974,14 @@
                     "enum": [
                       "off",
                       "media",
-                      "playlist"
+                      "playlist",
+                      "order",
+                      "shuffle"
                     ],
                     "type": "string"
+                  },
+                  "pauseOnHidden": {
+                    "type": "boolean"
                   },
                   "rate": {
                     "maximum": 4,
@@ -7680,6 +8003,15 @@
                     "maximum": 10000,
                     "minimum": -10000,
                     "type": "number"
+                  },
+                  "fontFamily": {
+                    "enum": [
+                      "",
+                      "sans-serif",
+                      "serif",
+                      "monospace"
+                    ],
+                    "type": "string"
                   },
                   "fontSizePct": {
                     "maximum": 250,

@@ -453,6 +453,18 @@
         ],
         "type": "string"
       },
+      "playlistIndex": {
+        "anyOf": [
+          {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "positionUs": {
         "type": "number"
       },
@@ -808,6 +820,7 @@
       "media",
       "tracks",
       "selected",
+      "playlistIndex",
       "positionUs",
       "durationUs",
       "rate",

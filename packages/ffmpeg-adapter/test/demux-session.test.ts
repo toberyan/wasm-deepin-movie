@@ -138,6 +138,34 @@ describe("DemuxSession", () => {
     }
   }, 30_000);
 
+  it("uses the caller's file identity as the media source id", async () => {
+    const source = await fileSource("sample-h264-aac.mp4");
+    const session = new DemuxSession();
+    try {
+      const identified = await session.open({
+        kind: "file",
+        file: source.file,
+        name: source.name,
+        identity: "films/a/episode.mp4|424242|1700000000000"
+      });
+      expect(identified.media.sourceId).toBe(
+        "file:films/a/episode.mp4|424242|1700000000000"
+      );
+      await session.close();
+
+      // Without an identity the legacy name+size form is kept for callers that
+      // only pass a bare file.
+      const anonymous = await session.open({
+        kind: "file",
+        file: source.file,
+        name: source.name
+      });
+      expect(anonymous.media.sourceId).toBe(`file:${source.name}:${source.file.size}`);
+    } finally {
+      await session.close();
+    }
+  });
+
   it("reports unsupported containers as a typed error", async () => {
     const source = await fileSource("sample-mpeg4-mp3.avi");
     const session = new DemuxSession();

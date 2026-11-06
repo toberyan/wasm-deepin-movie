@@ -13,6 +13,13 @@ export interface PlaylistItem {
   name: string;
   source: MediaSourceInput;
   durationUs?: number;
+  /** Stable identity for a local file; persisted across restarts. */
+  identity?: string;
+  /**
+   * `false` when the item is a persisted local file whose `File` handle has not
+   * been re-linked yet. Playing it must ask the user to re-select the file.
+   */
+  available?: boolean;
 }
 
 export interface HistoryItem {

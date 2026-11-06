@@ -66,4 +66,13 @@ ffmpeg -hide_banner -loglevel error -y \
   -metadata:s:t:0 filename=NotoSansLycian-Regular.ttf \
   -c copy "$out/sample-h264-aac-ass-font.mkv"
 
+# Variable frame rate: 0 s, 0.2 s and 1.2 s. The one-second gap is the
+# regression sample for backward frame stepping (the previous frame is far
+# behind the playhead and a 30 fps estimate cannot find it).
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc2=size=320x180:rate=30 \
+  -vf "select='eq(n\,0)+eq(n\,6)+eq(n\,36)'" -fps_mode vfr -frames:v 3 \
+  -c:v libx264 -pix_fmt yuv420p -g 1 \
+  "$out/sample-vfr-gap.mp4"
+
 node scripts/generate-fixture-manifest.mjs

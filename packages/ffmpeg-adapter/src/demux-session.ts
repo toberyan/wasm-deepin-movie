@@ -191,6 +191,8 @@ interface WasmDecoderState {
   frame: number;
   nextAudioTimestampUs?: number;
   nextVideoTimestampUs?: number;
+  /** Colour description used by the YUV→RGBA conversion for this stream. */
+  color?: ColorInfo;
 }
 
 export class DemuxSession {
@@ -391,7 +393,9 @@ export class DemuxSession {
         time_base: [stream.time_base_num, stream.time_base_den]
       });
       void codec;
+      const color = this.probe?.media.streams.find((entry) => entry.index === index)?.color;
       const state: WasmDecoderState = { stream, decoder, packet, frame };
+      if (color) state.color = color;
       this.wasmDecoders.set(index, state);
       configured.push(index);
     }
@@ -691,7 +695,7 @@ export class DemuxSession {
       const durationUs = packet.durationUs > 0 ? packet.durationUs : 33_333;
       const baseTimestamp = state.nextVideoTimestampUs ?? packet.ptsUs;
       frames.forEach((frame, index) => {
-        const image = avFrameToRgba(frame);
+        const image = avFrameToRgba(frame, state.color);
         if (!image) return;
         videoOut.push({
           streamIndex: packet.streamIndex,
@@ -747,7 +751,7 @@ export class DemuxSession {
         const durationUs = 33_333;
         const baseTimestamp = state.nextVideoTimestampUs ?? 0;
         frames.forEach((frame, index) => {
-          const image = avFrameToRgba(frame);
+          const image = avFrameToRgba(frame, state.color);
           if (!image) return;
           videoOut.push({
             streamIndex: state.stream.index,
@@ -978,13 +982,22 @@ export class DemuxSession {
       tracks.push(track);
     }
 
+    // Prefer the caller's stable identity (path + size + modification time):
+    // name+size alone collides for same-named files from different folders and
+    // leaks history/bookmarks between them.
+    let sourceId: string;
+    if (source.kind === "file") {
+      sourceId =
+        source.identity !== undefined
+          ? `file:${source.identity}`
+          : `file:${name}:${capabilities.size}`;
+    } else if (source.kind === "url") {
+      sourceId = source.url;
+    } else {
+      sourceId = `source:${name}`;
+    }
     const media: ProbeResult["media"] = {
-      sourceId:
-        source.kind === "file"
-          ? `file:${name}:${capabilities.size}`
-          : source.kind === "url"
-            ? source.url
-            : `source:${name}`,
+      sourceId,
       name,
       sizeBytes: capabilities.size,
       durationUs: Math.max(0, durationUs),
@@ -1108,7 +1121,66 @@ export class DemuxSession {
   }
 }
 
-function avFrameToRgba(frame: LibAVJS.Frame): { data: ArrayBuffer; width: number; height: number } | null {
+type YuvMatrix = "bt601" | "bt709" | "bt2020" | "fcc" | "smpte240m" | "ycgco";
+
+interface YuvConversion {
+  matrix: YuvMatrix;
+  /** "tv" is limited range (16-235 / 16-240), "pc" is full range. */
+  range: "tv" | "pc";
+}
+
+const YUV_MATRICES: Record<YuvMatrix, { kr: number; kb: number }> = {
+  bt601: { kr: 0.299, kb: 0.114 },
+  bt709: { kr: 0.2126, kb: 0.0722 },
+  bt2020: { kr: 0.2627, kb: 0.0593 },
+  fcc: { kr: 0.3, kb: 0.11 },
+  smpte240m: { kr: 0.212, kb: 0.087 },
+  ycgco: { kr: 0.299, kb: 0.114 }
+};
+
+function matrixFromName(name: string | undefined): YuvMatrix | undefined {
+  switch (name) {
+    case "bt709":
+      return "bt709";
+    case "bt470bg":
+    case "smpte170m":
+      return "bt601";
+    case "bt2020nc":
+    case "bt2020c":
+      return "bt2020";
+    case "fcc":
+      return "fcc";
+    case "smpte240m":
+      return "smpte240m";
+    case "ycgco":
+    case "ycocg":
+      return "ycgco";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Pick the conversion the stream actually uses. When the container omits the
+ * matrix, SD heights follow BT.601 and 720p/above follow BT.709, which is the
+ * same convention ffmpeg applies for unknown matrices.
+ */
+export function resolveYuvConversion(
+  color: ColorInfo | undefined,
+  height: number,
+  format: number | undefined
+): YuvConversion {
+  const matrix = matrixFromName(color?.matrix) ?? (height >= 720 ? "bt709" : "bt601");
+  // AV_PIX_FMT_YUVJ420P (12) is the full-range variant.
+  const range =
+    format === 12 ? "pc" : color?.range === "pc" ? "pc" : "tv";
+  return { matrix, range };
+}
+
+export function avFrameToRgba(
+  frame: LibAVJS.Frame,
+  color?: ColorInfo
+): { data: ArrayBuffer; width: number; height: number } | null {
   const width = frame.width ?? 0;
   const height = frame.height ?? 0;
   if (width <= 0 || height <= 0) return null;
@@ -1120,6 +1192,20 @@ function avFrameToRgba(frame: LibAVJS.Frame): { data: ArrayBuffer; width: number
   const visibleWidth = width - crop.left - crop.right;
   const visibleHeight = height - crop.top - crop.bottom;
   if (visibleWidth <= 0 || visibleHeight <= 0) return null;
+
+  const conversion = resolveYuvConversion(color, visibleHeight, frame.format);
+  const yOffset = conversion.range === "pc" ? 0 : 16;
+  const yScale = conversion.range === "pc" ? 1 : 255 / 219;
+  const cScale = conversion.range === "pc" ? 1 : 255 / 224;
+  // YCgCo stores chroma as Co/Cg rather than Cb/Cr.
+  const ycgco = conversion.matrix === "ycgco";
+  const { kr, kb } = YUV_MATRICES[conversion.matrix];
+  const kg = 1 - kr - kb;
+  const rCr = 2 * (1 - kr) * cScale;
+  const bCb = 2 * (1 - kb) * cScale;
+  const gCb = (2 * kb * (1 - kb) * cScale) / kg;
+  const gCr = (2 * kr * (1 - kr) * cScale) / kg;
+
   const yPlane = layout[0]!;
   const uPlane = layout[1]!;
   const vPlane = layout[2]!;
@@ -1134,12 +1220,24 @@ function avFrameToRgba(frame: LibAVJS.Frame): { data: ArrayBuffer; width: number
       const yValue = data[yRow + x] ?? 0;
       const uValue = data[uPlane.offset + uvRow * uPlane.stride + Math.floor(sourceX / 2)] ?? 128;
       const vValue = data[vPlane.offset + uvRow * vPlane.stride + Math.floor(sourceX / 2)] ?? 128;
-      const c = yValue - 16;
-      const d = uValue - 128;
-      const e = vValue - 128;
-      output[offset] = Math.max(0, Math.min(255, Math.round(1.164 * c + 1.596 * e)));
-      output[offset + 1] = Math.max(0, Math.min(255, Math.round(1.164 * c - 0.392 * d - 0.813 * e)));
-      output[offset + 2] = Math.max(0, Math.min(255, Math.round(1.164 * c + 2.017 * d)));
+      const luma = (yValue - yOffset) * yScale;
+      const cb = (uValue - 128) * cScale;
+      const cr = (vValue - 128) * cScale;
+      let red: number;
+      let green: number;
+      let blue: number;
+      if (ycgco) {
+        red = luma - cb + cr;
+        green = luma + cb;
+        blue = luma - cb - cr;
+      } else {
+        red = luma + rCr * cr;
+        blue = luma + bCb * cb;
+        green = luma - gCb * cb - gCr * cr;
+      }
+      output[offset] = Math.max(0, Math.min(255, Math.round(red)));
+      output[offset + 1] = Math.max(0, Math.min(255, Math.round(green)));
+      output[offset + 2] = Math.max(0, Math.min(255, Math.round(blue)));
       output[offset + 3] = 255;
       offset += 4;
     }

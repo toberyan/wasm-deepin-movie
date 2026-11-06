@@ -2,7 +2,7 @@ import type { MediaInfo, PlayerErrorCode, TrackInfo } from "@wasm-player/contrac
 import type { SourceCapabilities } from "@wasm-player/source-readers";
 
 export type WorkerSource =
-  | { kind: "file"; file: File; name?: string; sizeBytes?: number }
+  | { kind: "file"; file: File; name?: string; sizeBytes?: number; identity?: string }
   | { kind: "url"; url: string; name?: string; headers?: Record<string, string>; sizeBytes?: number };
 
 export interface VideoCodecConfig {

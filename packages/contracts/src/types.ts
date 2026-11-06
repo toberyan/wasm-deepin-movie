@@ -171,6 +171,12 @@ export interface PlayerSnapshot {
   media: MediaInfo | null;
   tracks: TrackInfo[];
   selected: SelectedTracks;
+  /**
+   * Index of the playlist entry that is playing, or `null` when the media was
+   * opened directly. The controller owns this so auto-advance, the UI and the
+   * SDK all agree on "which entry is current".
+   */
+  playlistIndex: number | null;
   positionUs: number;
   durationUs: number;
   rate: number;

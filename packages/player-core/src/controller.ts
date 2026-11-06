@@ -7,6 +7,7 @@ import {
   SETTING_IDS,
   createCoreRegistry,
   describeSettings,
+  fileIdentityOf,
   flattenSettingsPatch,
   isSettingId,
   nestSettings,
@@ -25,6 +26,7 @@ import {
   mediaProbeInputSchema,
   playlistAddInputSchema,
   playlistPlayInputSchema,
+  playlistMoveInputSchema,
   playlistRemoveInputSchema,
   presetsApplyInputSchema,
   presetsDeleteInputSchema,
@@ -81,6 +83,15 @@ export interface PlayerHost {
   saveFile?(params?: Record<string, unknown>): Promise<void>;
 }
 
+export interface JobRetentionOptions {
+  /** Finished jobs kept in memory. Defaults to 32. */
+  maxEntries?: number;
+  /** Total bytes of capture results kept in memory. Defaults to 128 MiB. */
+  maxBytes?: number;
+  /** How long a finished job stays queryable. Defaults to 10 minutes. */
+  ttlMs?: number;
+}
+
 export interface PlayerControllerOptions {
   engine: MediaEngine;
   sessionId?: string;
@@ -90,6 +101,7 @@ export interface PlayerControllerOptions {
   dedupeWindowMs?: number;
   maxDedupEntries?: number;
   storage?: PlayerStorage;
+  jobRetention?: JobRetentionOptions;
 }
 
 interface JobRecord {
@@ -111,6 +123,30 @@ interface HandlerResult {
   bumpRevision: boolean;
   events?: { type: PlayerEventType; payload: unknown }[];
 }
+
+/**
+ * Actions that only read controller/engine state. Everything else is executed
+ * through the serial mutation queue so concurrent writes cannot interleave, and
+ * so `expectedRevision` is checked at execution time rather than at submission.
+ */
+const READ_ONLY_ACTIONS: ReadonlySet<ActionId> = new Set([
+  ACTION_IDS.sourcesList,
+  ACTION_IDS.tracksList,
+  ACTION_IDS.settingsDescribe,
+  ACTION_IDS.settingsGet,
+  ACTION_IDS.stateGet,
+  ACTION_IDS.eventsRead,
+  ACTION_IDS.diagnosticsGet,
+  ACTION_IDS.actionsList,
+  ACTION_IDS.capabilitiesGet,
+  ACTION_IDS.jobsGet,
+  ACTION_IDS.sessionsList,
+  ACTION_IDS.configExport,
+  ACTION_IDS.presetsList,
+  ACTION_IDS.playlistList,
+  ACTION_IDS.historyList,
+  ACTION_IDS.bookmarksList
+]);
 
 const CORE_OWNED_SETTINGS: ReadonlySet<SettingId> = new Set([
   "app.theme",
@@ -193,16 +229,23 @@ export class PlayerController {
 
   private readonly jobs = new Map<string, JobRecord>();
   private readonly jobBlobs = new Map<string, Blob>();
+  private readonly jobRetention: Required<JobRetentionOptions>;
   private jobSeq = 0;
 
   private eventSeq = 0;
   private events: PlayerEvent[] = [];
   private readonly listeners = new Set<(event: PlayerEvent) => void>();
   private readonly dedupe = new Map<string, { at: number; result: InvokeResult }>();
+  /** Requests that are still executing, so duplicates share one execution. */
+  private readonly inFlight = new Map<string, Promise<InvokeResult>>();
+  /** Tail of the serial queue used for state-changing actions. */
+  private mutationTail: Promise<void> = Promise.resolve();
 
   private readonly presets = new Map<string, Preset>();
   private playlist: PlaylistItem[] = [];
   private currentPlaylistIndex: number | null = null;
+  /** Source key of the media that is open; format-agnostic media identity. */
+  private currentMediaKey: string | undefined;
   private history: HistoryItem[] = [];
   private readonly bookmarks = new Map<string, Bookmark[]>();
 
@@ -221,6 +264,11 @@ export class PlayerController {
     this.eventBufferSize = options.eventBufferSize ?? 1000;
     this.dedupeWindowMs = options.dedupeWindowMs ?? 5 * 60 * 1000;
     this.maxDedupEntries = options.maxDedupEntries ?? 2048;
+    this.jobRetention = {
+      maxEntries: options.jobRetention?.maxEntries ?? 32,
+      maxBytes: options.jobRetention?.maxBytes ?? 128 * 1024 * 1024,
+      ttlMs: options.jobRetention?.ttlMs ?? 10 * 60 * 1000
+    };
     this.capabilities = this.engine.getCapabilities();
     for (const id of SETTING_IDS) this.effective.set(id, emptyEffective(id));
     this.unsubscribeEngine = this.engine.subscribe((event) => this.onEngineEvent(event));
@@ -236,6 +284,7 @@ export class PlayerController {
       media: this.media,
       tracks: this.tracks,
       selected: this.selected,
+      playlistIndex: this.currentPlaylistIndex,
       positionUs: this.positionUs,
       durationUs: this.durationUs,
       rate: this.rate,
@@ -271,27 +320,50 @@ export class PlayerController {
   async invoke<I = unknown, O = unknown>(
     request: InvokeRequest<I>
   ): Promise<InvokeResult<O>> {
-    const now = this.now();
-    this.pruneDedupe(now);
     const dedupeKey = `${request.sessionId}:${request.requestId}`;
+    this.pruneDedupe(this.now());
     const existing = this.dedupe.get(dedupeKey);
     if (existing) {
       return structuredClone(existing.result) as InvokeResult<O>;
     }
+    // A duplicate that arrives while the first copy is still running must not
+    // execute the action again; it waits for the same result.
+    const running = this.inFlight.get(dedupeKey);
+    if (running) {
+      return structuredClone(await running) as InvokeResult<O>;
+    }
 
+    const task = (async (): Promise<InvokeResult> => {
+      try {
+        return await this.execute(request, this.now());
+      } catch (error) {
+        return this.rejected(request, error);
+      }
+    })();
+    this.inFlight.set(dedupeKey, task);
     let result: InvokeResult;
     try {
-      result = await this.execute(request, now);
-    } catch (error) {
-      result = this.rejected(request, error);
+      result = await task;
+    } finally {
+      this.inFlight.delete(dedupeKey);
     }
-    this.dedupe.set(dedupeKey, { at: now, result });
+    this.dedupe.set(dedupeKey, { at: this.now(), result });
     while (this.dedupe.size > this.maxDedupEntries) {
       const oldest = this.dedupe.keys().next().value as string | undefined;
       if (oldest === undefined) break;
       this.dedupe.delete(oldest);
     }
     return result as InvokeResult<O>;
+  }
+
+  /** Runs `task` after every previously queued mutation has settled. */
+  private runSerialized<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.mutationTail.then(task, task);
+    this.mutationTail = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   async dispose(): Promise<void> {
@@ -305,6 +377,8 @@ export class PlayerController {
     }
     this.unsubscribeEngine();
     this.listeners.clear();
+    this.jobs.clear();
+    this.jobBlobs.clear();
     const previous = this.phase;
     this.phase = "disposed";
     await this.engine.dispose();
@@ -353,14 +427,24 @@ export class PlayerController {
       .filter((item) => item && typeof item.id === "string" && typeof item.name === "string")
       .slice(0, 100);
     this.playlist = (Array.isArray(saved.playlist) ? saved.playlist : [])
-      .filter(
-        (item) =>
-          item &&
-          typeof item.name === "string" &&
-          item.source &&
-          (item.source.kind === "url" || item.source.kind === "sourceId")
-      )
-      .map((item, index) => ({ ...item, index }));
+      .filter((item) => {
+        if (!item || typeof item.name !== "string" || !item.source) return false;
+        if (item.source.kind === "url" || item.source.kind === "sourceId") return true;
+        // A local file cannot be serialized; keep the entry only when it has a
+        // stable identity that can be re-linked from a file picker later.
+        return (
+          item.source.kind === "file" &&
+          typeof (item.identity ?? item.source.identity) === "string"
+        );
+      })
+      .map((item, index) => {
+        if (item.source.kind !== "file") return { ...item, index };
+        const identity = (item.identity ?? item.source.identity) as string;
+        const source: MediaSourceInput = { kind: "file", identity };
+        if (item.source.name !== undefined) source.name = item.source.name;
+        if (item.source.sizeBytes !== undefined) source.sizeBytes = item.source.sizeBytes;
+        return { ...item, index, identity, available: false, source };
+      });
     this.bookmarks.clear();
     for (const item of Array.isArray(saved.bookmarks) ? saved.bookmarks : []) {
       if (!item || typeof item.mediaId !== "string" || typeof item.id !== "string") continue;
@@ -377,16 +461,71 @@ export class PlayerController {
   }
 
   private persistedState(): PersistedPlayerState {
+    const playlist: PlaylistItem[] = [];
+    this.playlist.forEach((item, index) => {
+      if (item.source.kind !== "file") {
+        playlist.push({ ...item, index });
+        return;
+      }
+      const identity = item.identity ?? this.identityOf(item.source);
+      if (!identity) return;
+      const source: MediaSourceInput = { kind: "file", identity };
+      if (item.source.name !== undefined) source.name = item.source.name;
+      if (item.source.sizeBytes !== undefined) source.sizeBytes = item.source.sizeBytes;
+      playlist.push({ ...item, index, identity, available: false, source });
+    });
     return {
       version: 1,
       globalSettings: Object.fromEntries(this.layers.global),
       history: this.history,
       bookmarks: [...this.bookmarks.values()].flat(),
-      playlist: this.playlist
-        .filter((item) => item.source.kind !== "file")
-        .map((item, index) => ({ ...item, index })),
+      playlist,
       presets: [...this.presets.values()]
     };
+  }
+
+  /** Media source id that a playlist entry would produce for this source. */
+  private currentSourceKey(source: MediaSourceInput): string | undefined {
+    if (source.kind === "file") {
+      const identity = this.identityOf(source);
+      return identity === undefined ? undefined : `file:${identity}`;
+    }
+    return source.kind === "url" ? source.url : undefined;
+  }
+
+  /** Stable identity for a local file source, or `undefined` for remote ones. */
+  private identityOf(source: MediaSourceInput): string | undefined {
+    if (source.kind !== "file") return undefined;
+    return source.identity ?? fileIdentityOf(source.file, source.name);
+  }
+
+  /**
+   * Re-attach a freshly picked file to the playlist entries that were restored
+   * from storage. Matching happens on the persisted identity, so a file is
+   * recognised even when its playlist entry no longer holds a `File`.
+   *
+   * Returns the index of the matching entry so a direct open can make the
+   * controller's current playlist entry follow the file that is playing.
+   */
+  private relinkPlaylistSource(source: MediaSourceInput): number | null {
+    const identity = this.identityOf(source);
+    if (!identity) return null;
+    let matched: number | null = null;
+    let changed = false;
+    for (const item of this.playlist) {
+      if (item.source.kind !== "file") continue;
+      const itemIdentity = item.identity ?? this.identityOf(item.source);
+      if (itemIdentity !== identity) continue;
+      matched = item.index;
+      if (item.available !== false && item.source.file === source.file) continue;
+      item.source = source;
+      item.identity = identity;
+      item.available = true;
+      if (source.name !== undefined) item.name = source.name;
+      changed = true;
+    }
+    if (changed) this.schedulePersist();
+    return matched;
   }
 
   private schedulePersist(delayMs = 250): void {
@@ -449,18 +588,6 @@ export class PlayerController {
     if (!definition) {
       throw invalidRequest(`unknown action: ${request.action}`);
     }
-    if (request.expectedRevision !== undefined && request.expectedRevision !== this.revision) {
-      throw new PlayerError(
-        "REVISION_CONFLICT",
-        `expected revision ${request.expectedRevision}, current revision ${this.revision}`,
-        {
-          details: {
-            expectedRevision: request.expectedRevision,
-            revision: this.revision
-          }
-        }
-      );
-    }
 
     let params: unknown;
     try {
@@ -469,43 +596,65 @@ export class PlayerController {
       throw invalidRequest(`invalid params for ${request.action}`, error);
     }
 
-    if (definition.media === "required" && this.media === null) {
-      throw new PlayerError("NEEDS_MEDIA", `${request.action} requires an open media`);
-    }
-
-    const handled = await this.dispatch(request.action, params, now);
-
-    let output: unknown = handled.output;
-    if (output !== undefined) {
-      try {
-        output = definition.outputSchema.parse(output);
-      } catch (error) {
-        throw new PlayerError("INTERNAL", `action ${request.action} produced invalid output`, {
-          details: errorDetails(error),
-          cause: error
-        });
+    // Everything that can change state runs through one queue: the revision
+    // check, the dispatch and the revision bump must not interleave with another
+    // write, otherwise two requests that both expect revision N both succeed.
+    const run = async (): Promise<InvokeResult> => {
+      if (request.expectedRevision !== undefined && request.expectedRevision !== this.revision) {
+        throw new PlayerError(
+          "REVISION_CONFLICT",
+          `expected revision ${request.expectedRevision}, current revision ${this.revision}`,
+          {
+            details: {
+              expectedRevision: request.expectedRevision,
+              revision: this.revision
+            }
+          }
+        );
       }
-    }
+      if (definition.media === "required" && this.media === null) {
+        throw new PlayerError("NEEDS_MEDIA", `${request.action} requires an open media`);
+      }
 
-    if (handled.bumpRevision) this.revision += 1;
-    for (const event of handled.events ?? []) {
-      this.emitEvent(event.type, event.payload);
-    }
-    if (handled.bumpRevision) {
-      this.emitEvent("state", this.getState());
-    }
+      const handled = await this.dispatch(request.action, params, now);
 
-    const result: InvokeResult = {
-      requestId: request.requestId,
-      sessionId: this.sessionId,
-      status: handled.status,
-      revision: this.revision
+      let output: unknown = handled.output;
+      if (output !== undefined) {
+        try {
+          output = definition.outputSchema.parse(output);
+        } catch (error) {
+          throw new PlayerError("INTERNAL", `action ${request.action} produced invalid output`, {
+            details: errorDetails(error),
+            cause: error
+          });
+        }
+      }
+
+      if (handled.bumpRevision) this.revision += 1;
+      for (const event of handled.events ?? []) {
+        this.emitEvent(event.type, event.payload);
+      }
+      if (handled.bumpRevision) {
+        this.emitEvent("state", this.getState());
+      }
+
+      const result: InvokeResult = {
+        requestId: request.requestId,
+        sessionId: this.sessionId,
+        status: handled.status,
+        revision: this.revision
+      };
+      if (handled.requested !== undefined) result.requested = handled.requested;
+      if (handled.effective !== undefined) result.effective = handled.effective;
+      if (handled.jobId !== undefined) result.jobId = handled.jobId;
+      if (output !== undefined) result.output = output;
+      return result;
     };
-    if (handled.requested !== undefined) result.requested = handled.requested;
-    if (handled.effective !== undefined) result.effective = handled.effective;
-    if (handled.jobId !== undefined) result.jobId = handled.jobId;
-    if (output !== undefined) result.output = output;
-    return result;
+
+    if (READ_ONLY_ACTIONS.has(request.action) && request.expectedRevision === undefined) {
+      return run();
+    }
+    return this.runSerialized(run);
   }
 
   private rejected(request: InvokeRequest<unknown>, error: unknown): InvokeResult {
@@ -620,6 +769,10 @@ export class PlayerController {
         return this.deletePreset(presetsDeleteInputSchema.parse(params).id);
       case ACTION_IDS.playlistAdd:
         return this.addPlaylist(playlistAddInputSchema.parse(params).sources);
+      case ACTION_IDS.playlistMove: {
+        const input = playlistMoveInputSchema.parse(params);
+        return this.movePlaylist(input.from, input.to);
+      }
       case ACTION_IDS.playlistRemove:
         return this.removePlaylist(playlistRemoveInputSchema.parse(params).index);
       case ACTION_IDS.playlistClear:
@@ -651,6 +804,10 @@ export class PlayerController {
       const value: EngineMediaSource = { kind: "file", file: source.file };
       if (source.name !== undefined) value.name = source.name;
       if (source.sizeBytes !== undefined) value.sizeBytes = source.sizeBytes;
+      // The identity survives restarts, so the engine can expose it as the
+      // media source id and history/bookmarks stay per file, not per name.
+      const identity = this.identityOf(source);
+      if (identity !== undefined) value.identity = identity;
       return value;
     }
     if (source.kind === "url") {
@@ -675,7 +832,10 @@ export class PlayerController {
     preferredTracks?: Partial<Record<TrackType, number>>;
     fromPlaylist?: boolean;
   }): Promise<HandlerResult> {
-    if (!input.fromPlaylist) this.currentPlaylistIndex = null;
+    // Opening a playlist entry always sets the index; opening the same file
+    // directly makes the entry it belongs to current, so the UI and the
+    // previous/next commands follow the media that is actually playing.
+    const linked = this.relinkPlaylistSource(input.source);
     const result = await this.engine.open({
       source: this.engineSource(input.source),
       autoPlay: input.autoPlay,
@@ -683,6 +843,8 @@ export class PlayerController {
       forceDecodePath: input.forceDecodePath,
       preferredTracks: input.preferredTracks
     });
+    if (!input.fromPlaylist) this.currentPlaylistIndex = linked;
+    this.currentMediaKey = this.currentSourceKey(input.source);
     this.layers.media.clear();
     this.applyOpenResult(result);
     await this.syncSettingsToEngine("session");
@@ -712,6 +874,7 @@ export class PlayerController {
 
   private async closeMedia(): Promise<HandlerResult> {
     this.currentPlaylistIndex = null;
+    this.currentMediaKey = undefined;
     this.updateHistoryPosition();
     this.schedulePersist(0);
     await this.engine.close();
@@ -801,8 +964,8 @@ export class PlayerController {
     };
   }
 
-  private async step(input: { frames: number }): Promise<HandlerResult> {
-    await this.engine.step(input.frames);
+  private async step(input: { frames: number; direction?: "forward" | "backward" }): Promise<HandlerResult> {
+    await this.engine.step(input.frames, input.direction ?? "forward");
     this.positionUs = this.engine.getSnapshot().positionUs;
     return {
       status: "applied",
@@ -853,7 +1016,9 @@ export class PlayerController {
     };
   }
 
-  private async setLoop(mode: "off" | "media" | "playlist"): Promise<HandlerResult> {
+  private async setLoop(
+    mode: "off" | "media" | "playlist" | "order" | "shuffle"
+  ): Promise<HandlerResult> {
     return this.applySettings("global", { playback: { loop: mode } });
   }
 
@@ -1134,6 +1299,7 @@ export class PlayerController {
   }
 
   private createCaptureJob(options: CaptureOptions, now: number): HandlerResult {
+    this.pruneJobs(now);
     this.jobSeq += 1;
     const jobId = `job-${this.jobSeq}`;
     const job: JobRecord = {
@@ -1172,6 +1338,7 @@ export class PlayerController {
         capturedAtUs: result.capturedAtUs
       };
       this.jobBlobs.set(jobId, result.blob);
+      this.pruneJobs();
       this.emitEvent("jobUpdated", { jobId, status: "applied", result: latest.result });
     } catch (error) {
       const latest = this.jobs.get(jobId);
@@ -1186,6 +1353,53 @@ export class PlayerController {
 
   getJobBlob(jobId: string): Blob | undefined {
     return this.jobBlobs.get(jobId);
+  }
+
+  /**
+   * Drop a captured result once the caller has consumed it. The returned Blob
+   * reference stays valid; only the controller's copy is released.
+   */
+  releaseJob(jobId: string): boolean {
+    const hadBlob = this.jobBlobs.delete(jobId);
+    const job = this.jobs.get(jobId);
+    const removable = job !== undefined && this.isFinishedJob(job);
+    if (removable) this.jobs.delete(jobId);
+    return hadBlob || removable;
+  }
+
+  private isFinishedJob(job: JobRecord): boolean {
+    return job.status === "applied" || job.status === "failed" || job.status === "cancelled";
+  }
+
+  /**
+   * Captures are the only unbounded results the controller keeps: evict expired
+   * jobs and, when over the entry or byte budget, the oldest finished ones.
+   * Running jobs are never evicted mid-flight.
+   */
+  private pruneJobs(now = this.now()): void {
+    for (const [jobId, job] of this.jobs) {
+      if (!this.isFinishedJob(job)) continue;
+      if (now - job.updatedAt > this.jobRetention.ttlMs) {
+        this.jobs.delete(jobId);
+        this.jobBlobs.delete(jobId);
+      }
+    }
+    let bytes = 0;
+    for (const blob of this.jobBlobs.values()) bytes += blob.size;
+    const finished = [...this.jobs.values()]
+      .filter((job) => this.isFinishedJob(job))
+      .sort((left, right) => left.updatedAt - right.updatedAt);
+    for (const job of finished) {
+      const overEntries = this.jobs.size > this.jobRetention.maxEntries;
+      const overBytes = bytes > this.jobRetention.maxBytes;
+      if (!overEntries && !overBytes) break;
+      const blob = this.jobBlobs.get(job.jobId);
+      if (blob) {
+        bytes -= blob.size;
+        this.jobBlobs.delete(job.jobId);
+      }
+      this.jobs.delete(job.jobId);
+    }
   }
 
   private jobStatus(job: JobRecord): Record<string, unknown> {
@@ -1281,7 +1495,19 @@ export class PlayerController {
     if (sessionId !== this.sessionId) {
       throw new PlayerError("SESSION_CLOSED", `session ${sessionId} is not available`);
     }
-    return { status: "applied", output: this.getState(), bumpRevision: false };
+    return {
+      status: "applied",
+      output: {
+        session: {
+          sessionId: this.sessionId,
+          title: this.media?.name,
+          mediaName: this.media?.name,
+          phase: this.phase,
+          connectedAt: this.now()
+        }
+      },
+      bumpRevision: false
+    };
   }
 
   private exportConfig(now: number): HandlerResult {
@@ -1356,13 +1582,61 @@ export class PlayerController {
 
   private addPlaylist(sources: MediaSourceInput[]): HandlerResult {
     for (const source of sources) {
+      const identity = this.identityOf(source);
+      const name = source.name ?? this.sourceLabel(source);
+      // Adding the file that is already playing (or the URL doing so) makes its
+      // new entry the current one, so the highlight and previous/next agree
+      // with what the user hears.
+      const playingKey = this.currentSourceKey(source);
+      const isPlaying = playingKey !== undefined && this.currentMediaKey === playingKey;
+      const existing = identity
+        ? this.playlist.find(
+            (item) => item.source.kind === "file" && item.identity === identity
+          )
+        : undefined;
+      if (existing) {
+        // Re-adding a known file refreshes its handle instead of duplicating
+        // the entry, which is what a folder re-pick or relink should do.
+        existing.name = name;
+        existing.source = source;
+        existing.identity = identity;
+        existing.available = true;
+        if (isPlaying) this.currentPlaylistIndex = existing.index;
+        continue;
+      }
       const index = this.playlist.length;
-      const item: PlaylistItem = {
-        index,
-        name: source.name ?? this.sourceLabel(source),
-        source
-      };
+      const item: PlaylistItem = { index, name, source };
+      if (identity) {
+        item.identity = identity;
+        item.available = true;
+      }
       this.playlist.push(item);
+      if (isPlaying) this.currentPlaylistIndex = index;
+    }
+    this.schedulePersist();
+    return {
+      status: "applied",
+      bumpRevision: true,
+      output: { items: this.playlistItems() }
+    };
+  }
+
+  private movePlaylist(from: number, to: number): HandlerResult {
+    const lastIndex = this.playlist.length - 1;
+    if (from < 0 || from > lastIndex || to < 0 || to > lastIndex) {
+      throw invalidRequest(`playlist index out of range: ${from} -> ${to}`);
+    }
+    const [item] = this.playlist.splice(from, 1);
+    if (!item) throw invalidRequest(`playlist index out of range: ${from}`);
+    this.playlist.splice(to, 0, item);
+    this.playlist = this.playlist.map((entry, index) => ({ ...entry, index }));
+    const current = this.currentPlaylistIndex;
+    if (current === from) {
+      this.currentPlaylistIndex = to;
+    } else if (current !== null && from < current && to >= current) {
+      this.currentPlaylistIndex = current - 1;
+    } else if (current !== null && from > current && to <= current) {
+      this.currentPlaylistIndex = current + 1;
     }
     this.schedulePersist();
     return {
@@ -1376,6 +1650,11 @@ export class PlayerController {
     if (index < 0 || index >= this.playlist.length) throw invalidRequest(`playlist index out of range: ${index}`);
     this.playlist.splice(index, 1);
     this.playlist = this.playlist.map((item, next) => ({ ...item, index: next }));
+    if (this.currentPlaylistIndex === index) {
+      this.currentPlaylistIndex = null;
+    } else if (this.currentPlaylistIndex !== null && index < this.currentPlaylistIndex) {
+      this.currentPlaylistIndex -= 1;
+    }
     this.schedulePersist();
     return {
       status: "applied",
@@ -1386,6 +1665,7 @@ export class PlayerController {
 
   private clearPlaylist(): HandlerResult {
     this.playlist = [];
+    this.currentPlaylistIndex = null;
     this.schedulePersist();
     return {
       status: "applied",
@@ -1397,6 +1677,20 @@ export class PlayerController {
   private async playPlaylist(index: number): Promise<HandlerResult> {
     const item = this.playlist[index];
     if (!item) throw invalidRequest(`playlist index out of range: ${index}`);
+    if (item.source.kind === "file" && !(item.source.file instanceof Blob)) {
+      throw new PlayerError(
+        "SOURCE_NOT_AUTHORIZED",
+        `“${item.name}”是本地文件，需要在浏览器中重新选择后才能播放`,
+        {
+          recoverable: true,
+          details: {
+            relinkRequired: true,
+            identity: item.identity ?? null,
+            name: item.name
+          }
+        }
+      );
+    }
     this.currentPlaylistIndex = index;
     return this.openMedia({ source: item.source, autoPlay: true, fromPlaylist: true });
   }
@@ -1405,10 +1699,14 @@ export class PlayerController {
     return this.playlist.map((item) => {
       const output: Record<string, unknown> = {
         index: item.index,
-        name: item.name
+        name: item.name,
+        kind: item.source.kind,
+        available: item.available !== false
       };
       if (item.source.kind === "url" && item.source.url) output.url = item.source.url;
       if (item.source.kind === "sourceId" && item.source.sourceId) output.sourceId = item.source.sourceId;
+      const identity = item.identity ?? this.identityOf(item.source);
+      if (identity) output.identity = identity;
       if (item.durationUs !== undefined) output.durationUs = item.durationUs;
       return output;
     });
@@ -1544,6 +1842,7 @@ export class PlayerController {
       }
       case "mediaClosed": {
         this.media = null;
+        this.currentMediaKey = undefined;
         this.tracks = [];
         this.stats = this.engine.getSnapshot().stats;
         this.emitEvent("mediaClosed", {});
@@ -1569,7 +1868,12 @@ export class PlayerController {
     }
   }
 
+  /** Auto-advance is a state change, so it joins the same serial queue. */
   private async handleLoopOnEnd(): Promise<void> {
+    await this.runSerialized(() => this.advanceAfterEnd());
+  }
+
+  private async advanceAfterEnd(): Promise<void> {
     const loop = this.effective.get("playback.loop")?.effective;
     if (loop === "media") {
       try {
@@ -1581,8 +1885,24 @@ export class PlayerController {
       }
       return;
     }
-    if (loop === "playlist" && this.currentPlaylistIndex !== null && this.playlist.length > 0) {
-      const next = (this.currentPlaylistIndex + 1) % this.playlist.length;
+    if (
+      (loop === "playlist" || loop === "order" || loop === "shuffle") &&
+      this.currentPlaylistIndex !== null &&
+      this.playlist.length > 0
+    ) {
+      let next: number;
+      if (loop === "playlist") {
+        next = (this.currentPlaylistIndex + 1) % this.playlist.length;
+      } else if (loop === "order") {
+        next = this.currentPlaylistIndex + 1;
+        if (next >= this.playlist.length) return;
+      } else if (this.playlist.length === 1) {
+        next = 0;
+      } else {
+        do {
+          next = Math.floor(Math.random() * this.playlist.length);
+        } while (next === this.currentPlaylistIndex);
+      }
       try {
         await this.playPlaylist(next);
       } catch {

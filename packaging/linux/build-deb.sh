@@ -62,5 +62,9 @@ chmod 0755 "$ROOT/DEBIAN/postinst"
 
 mkdir -p "$OUT"
 rm -f "$OUT/${PKG}_${VERSION}_all.deb"
-fakeroot dpkg-deb --build --root-owner-group "$STAGE" "$OUT/${PKG}_${VERSION}_all.deb"
+if command -v fakeroot >/dev/null 2>&1; then
+  fakeroot dpkg-deb --build --root-owner-group "$STAGE" "$OUT/${PKG}_${VERSION}_all.deb"
+else
+  dpkg-deb --build --root-owner-group "$STAGE" "$OUT/${PKG}_${VERSION}_all.deb"
+fi
 echo "built $OUT/${PKG}_${VERSION}_all.deb"

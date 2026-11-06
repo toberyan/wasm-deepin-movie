@@ -113,18 +113,51 @@ Working and verified:
 
 - MP4/MKV/WebM probe with real libav.js; MP4 H.264/AAC playback in Chrome.
 - First frame, video decode/render, audio decode/PCM, pause/resume, seek, rate,
-  hue/rotation/crop/sharpness/scale modes, external SRT and JASSUB ASS subtitles,
-  screenshot.
+  hue/rotation/crop/sharpness, nearest/bilinear scaling plus Catmull-Rom bicubic
+  resampling when enlarging, external SRT and JASSUB ASS subtitles, screenshot.
+- Frame stepping follows the decoded presentation timestamps, so 24/25/60 fps and
+  variable frame rate media step by real frames; backward stepping widens its
+  lookback window (1 s min, 4x per attempt) until it has the requested number of
+  earlier frames or reaches the start of the media, so one-second VFR gaps still
+  land on the exact frame for multi-frame steps.
 - Project-owned ST/MT variants: AVI/MPEG-4/MP3, forced H.264/AAC, HEVC/AC-3,
   FLAC/Opus; AVI auto-selects the custom variant by container extension.
 - Matroska H.264 and cropped/non-16-aligned H.264 MP4 use the custom WASM
   decoder. WASM YUV420p frames are converted to RGBA in CPU so padded/odd
   dimensions render without tiling.
-- Audio/video track switching by rebuilding the pipeline at the current position.
+- Audio/video track switching by rebuilding the pipeline at the current position;
+  audio channel selection (stereo/left/right), gain, balance, EQ, delay and output
+  device.
 - IndexedDB persistence for global settings, history, playlist, bookmarks and
   presets; library drawer and light/system theme.
-- Playlist loop, audio gain/balance, HTTP Range e2e, 5 GiB sparse offsets,
-  100 open/close cycles, MCP Companion, typed Agent SDK.
+- Local folder opening with a session queue, previous/next item, sequential and
+  shuffle modes, drag-to-reorder playlists, and URL playlist entries.
+- Local playlist entries survive a restart through a stable file identity
+  (relative path, size, modification time): the entry is listed as needing a
+  re-selection, and picking the file or folder again re-links it in place
+  instead of duplicating or confusing same-named files from other folders.
+- The same identity becomes the media source id, so history rows, resume
+  positions, bookmarks and playlist navigation stay per file even when several
+  `episode.mp4` files from different folders share a name and size.
+- The controller owns the current playlist entry and exposes it as
+  `snapshot.playlistIndex`, so auto-advance, previous/next, the playlist
+  highlight and SDK clients read the same state instead of tracking their own
+  copy (a direct open of a known file also makes its entry current).
+- Subtitle encoding selection, text-subtitle font family, embedded/external
+  SRT/VTT/ASS, subtitle delay and size, and libass selective style override for
+  ASS/SSA tracks (`subtitle.forceStyle`).
+- Film-info dialog, single-frame screenshot, 15-frame storyboard capture,
+  frame-step and 0.1x speed shortcuts, pause-when-hidden.
+- HTTP Range e2e, 5 GiB sparse offsets, 100 open/close cycles, MCP Companion,
+  typed Agent SDK.
+- Request handling is concurrency-safe: duplicate request ids share one
+  in-flight execution, every state-changing action runs through a serial queue
+  and `expectedRevision` is checked at execution time (not submission time).
+- Storage writes survive a failed write instead of poisoning the queue, and a
+  save resolves only when the IndexedDB transaction commits. Expired video
+  frames are released through the frame queue, audio buffer stats come from the
+  AudioWorklet ring, and capture results are evicted by entry/byte budget and
+  TTL with an explicit release call.
 - Contracts/core tests, JSON Schema snapshots, dependency-cruiser rules.
 
 Not yet delivered:
@@ -137,6 +170,12 @@ Not yet delivered:
   failing to open. The fallback is verified, but no real MT speedup is claimed.
 - PGS/VobSub bitmap subtitles; embedded text/ASS and font attachments are
   extracted and rendered.
+- Online subtitle search, dual subtitles, and remembering local subtitle files
+  across reloads (browser file handles are not persisted).
+- Configurable screenshot directory, progress-bar thumbnail previews, shortcut
+  customization, clear-playlist-on-exit, and DLNA casting.
+- Desktop shell features: CD/DVD, always-on-top, mini mode, file associations,
+  recent-file integration and explicit hardware/software decode selection.
 - HDR/WebGPU, HLS/DASH, 10-bit/tone mapping; full compatibility matrix and
   Windows/macOS runners.
 - H.264 Matroska is routed through the custom WASM decoder by default because

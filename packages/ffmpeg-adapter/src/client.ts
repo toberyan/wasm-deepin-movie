@@ -120,8 +120,17 @@ export class DemuxWorkerClient {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    // Reject in-flight reads before posting close. A read can be waiting on a
+    // blocked source; waiting for the close reply would leave it hanging until
+    // terminate(). The close message is still sent so a healthy worker can
+    // release FFmpeg resources, followed by terminate as a hard stop.
+    const closedError = new PlayerError("SESSION_CLOSED", "demux worker closed");
+    this.rejectAll(closedError);
     try {
-      await this.request<{ closed: true }>({ type: "close", requestId: 0 }, 10_000);
+      this.worker.postMessage({ type: "close", requestId: this.nextRequestId++ });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } catch {
+      // A worker that is already gone needs no close handshake.
     } finally {
       this.worker.terminate();
     }

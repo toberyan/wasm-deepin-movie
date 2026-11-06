@@ -243,11 +243,12 @@ export class FakeMediaEngine implements MediaEngine {
     return { positionUs: requested, requestedUs: positionUs, errorUs: requested - positionUs };
   }
 
-  async step(frames: number): Promise<void> {
+  async step(frames: number, direction: "forward" | "backward" = "forward"): Promise<void> {
     this.requireMedia();
     if (this.phase === "playing") throw new PlayerError("INVALID_REQUEST", "step requires paused state");
     const frameUs = Math.round(1_000_000 / 30);
-    this.positionUs = Math.min(this.durationUs, this.positionUs + frames * frameUs);
+    const delta = frames * frameUs * (direction === "backward" ? -1 : 1);
+    this.positionUs = Math.min(this.durationUs, Math.max(0, this.positionUs + delta));
     this.clock.seek(this.positionUs, 0);
     this.stats.decodedVideoFrames += frames;
     this.emit({ type: "position", positionUs: this.positionUs, durationUs: this.durationUs });

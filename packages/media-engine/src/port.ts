@@ -14,7 +14,7 @@ import type {
 } from "@wasm-player/contracts";
 
 export type EngineMediaSource =
-  | { kind: "file"; file: Blob; name?: string; sizeBytes?: number }
+  | { kind: "file"; file: Blob; name?: string; sizeBytes?: number; identity?: string }
   | { kind: "url"; url: string; name?: string; headers?: Record<string, string>; sizeBytes?: number }
   | { kind: "sourceId"; sourceId: string; name?: string; sizeBytes?: number };
 
@@ -123,6 +123,8 @@ export interface SubtitleLoadInput {
   activate?: boolean;
 }
 
+export type StepDirection = "forward" | "backward";
+
 /**
  * The only boundary player-core sees for media work. Implementations must not
  * leak FFmpeg pointers, WebCodecs objects or renderer details through it.
@@ -135,7 +137,7 @@ export interface MediaEngine {
   pause(): Promise<void>;
   stop(): Promise<void>;
   seek(positionUs: number): Promise<SeekResult>;
-  step(frames: number): Promise<void>;
+  step(frames: number, direction?: StepDirection): Promise<void>;
   setRate(rate: number): Promise<RateResult>;
   setVolume(volume: number, muted?: boolean): Promise<Record<string, EffectiveValue>>;
   selectTrack(type: TrackType, index: number): Promise<MediaOpenResult["tracks"]>;

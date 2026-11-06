@@ -25,6 +25,7 @@ import {
   mediaProbeInputSchema,
   playlistAddInputSchema,
   playlistListOutputSchema,
+  playlistMoveInputSchema,
   playlistPlayInputSchema,
   playlistRemoveInputSchema,
   presetsApplyInputSchema,
@@ -186,7 +187,10 @@ const playbackActions = [
   define({
     id: ACTION_IDS.playbackStep,
     title: { zh: "逐帧", en: "Step frame" },
-    description: { zh: "暂停状态下向前逐帧。", en: "Step forward while paused." },
+    description: {
+      zh: "按解码帧时间戳向前或向后逐帧（暂停状态）。",
+      en: "Step forward or backward by decoded frame timestamps while paused."
+    },
     inputSchema: stepInputSchema,
     outputSchema: emptyOutput,
     requires: [],
@@ -228,7 +232,7 @@ const playbackActions = [
   define({
     id: ACTION_IDS.loopSet,
     title: { zh: "循环模式", en: "Loop mode" },
-    description: { zh: "设置关闭、单文件或列表循环。", en: "Set off, media or playlist loop." },
+    description: { zh: "设置单个播放、循环、顺序或随机播放。", en: "Set single, loop, sequential or shuffle playback." },
     inputSchema: loopSetInputSchema,
     outputSchema: settingsApplyOutputSchema,
     requires: [],
@@ -643,6 +647,20 @@ const playlistActions = [
     events: ["state"],
     ui: { group: "playlist", keywords: ["playlist", "add", "列表"] },
     mcpTool: "playlist_add"
+  }),
+  define({
+    id: ACTION_IDS.playlistMove,
+    title: { zh: "调整列表顺序", en: "Move playlist item" },
+    description: { zh: "把列表项从 from 移动到 to。", en: "Move a playlist item from one index to another." },
+    inputSchema: playlistMoveInputSchema,
+    outputSchema: playlistListOutputSchema,
+    requires: [],
+    media: "forbidden",
+    cancellable: false,
+    longRunning: false,
+    events: ["state"],
+    ui: { group: "playlist", keywords: ["playlist", "move", "reorder", "列表"] },
+    mcpTool: "playlist_move"
   }),
   define({
     id: ACTION_IDS.playlistRemove,
